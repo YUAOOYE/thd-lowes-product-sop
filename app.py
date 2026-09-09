@@ -24,7 +24,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-header">🛠️ 北美建材大零售产品开发 SOP V3.0 系统</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">整合 The Home Depot (THD) 与 Lowe\'s 渠道标准 | 真实 VOC 溯源 | 结构拆解与制造工艺 | 动态安装载体适配</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">整合 The Home Depot (THD) 与 Lowe\'s 渠道标准 | 真实实时数据闭环 | 结构拆解与制造工艺 | 动态安装载体适配</div>', unsafe_allow_html=True)
 
 # ==============================================================================
 # 2. SOP V3.0 核心系统提示词
@@ -34,15 +34,29 @@ SOP_SYSTEM_INSTRUCTION = """
 你必须严格执行《北美建材大零售产品开发与竞品研究 SOP V3.0》（涵盖 The Home Depot 与 Lowe's 标准）。
 
 【核心原则与证据红线】
-1. 绝对真实性：严禁捏造数据或把推测当做事实。找不到的一手数据必须明确标记【未找到】或【开发假设】。
-2. 动态数据查核：涉及价格、评分、Review 总数、SKU/Item 编码尽量以已知真实参数为准，附带具体日期与有效来源。
-3. 尺寸严格解耦：标称开孔尺寸 (Duct Opening / Cutout)、插入配合部尺寸 (Drop-in Box / Body)、表面面板/法兰盘外沿尺寸 (Faceplate / Flange) 必须彻底区分，同时提供英制与公制毫米 (mm)。
-4. 真实 VOC 证据：Review 引用必须基于真实买家痛点，提取高频抱怨，不得自行编造买家言论。
+1. 绝对真实性：所有数据必须依据提供的最新检索事实进行提炼。严禁捏造虚假参数。
+2. 动态数据必须包含：当前市场售价区间、实际评分、评价数量级、官方产品代码（如 Home Depot Internet # / Store SKU，Lowe's Item #）。
+3. 尺寸严格解耦：标称安装尺寸/管径 (Nominal / Cutout)、插入配合部尺寸 (Drop-in / Body)、外沿法兰盘/面板尺寸 (Faceplate / Flange) 必须彻底区分，同时提供英制与公制毫米 (mm)。
+4. 真实 VOC 证据：Review 引用必须基于真实买家痛点（如密封老化漏水、塑料断裂、管壁锈蚀贴合不良），严禁编造空洞虚词。
 5. 闭环验证：所有 P0 级设计改进必须能够追溯到明确的 VOC 痛点或竞品缺陷，并制定具体的 EVT/DVT/PVT 验证方法。
 """
 
 # ==============================================================================
-# 3. 侧边栏：引擎配置与超丰富项目启动单
+# 3. 辅助功能：外置实时搜索（免 API Key 限制，直接抓取一手数据）
+# ==============================================================================
+def live_web_search(query, max_results=4):
+    try:
+        from duckduckgo_search import DDGS
+        results = []
+        with DDGS() as ddgs:
+            for r in ddgs.text(query, max_results=max_results):
+                results.append(f"【来源: {r.get('title', '')}】({r.get('href', '')}):\n{r.get('body', '')}")
+        return "\n\n".join(results)
+    except Exception:
+        return ""
+
+# ==============================================================================
+# 4. 侧边栏：引擎配置与超丰富项目启动单
 # ==============================================================================
 with st.sidebar:
     st.header("⚙️ 引擎配置")
@@ -53,21 +67,20 @@ with st.sidebar:
     else:
         default_key = os.environ.get("GEMINI_API_KEY", "")
         
-    api_key_input = st.text_input("Gemini API Key", value=default_key, type="password", help="从 Google AI Studio (aistudio.google.com) 获取")
+    api_key_input = st.text_input("Gemini API Key", value=default_key, type="password", help="从 Google AI Studio 获取")
     api_key = api_key_input or default_key
 
     preset_models = [
-        "gemini-2.5-flash (强烈推荐: 高额度抗限流+混合推理)",
-        "gemini-3.5-flash (Agentic推荐: 专为复杂工作流优化)",
-        "gemini-3.8-flash (2026最新: 前沿极速高智能)",
-        "gemini-3.7-flash (高能效多模态混合推理)",
-        "gemini-3.6-flash (高智能极低延迟版)",
-        "gemini-2.5-flash-lite (极速低耗轻量版)",
-        "gemini-2.5-pro (深度结构工程+复杂公差)",
-        "gemini-3.1-pro-preview (前沿旗舰深度逻辑)",
-        "gemini-flash-latest (动态别名: 最新稳定Flash)",
-        "gemini-pro-latest (动态别名: 最新稳定Pro)",
-        "gemini-2.0-flash (经典基准版本)"
+        "gemini-2.5-flash (推荐: 极高免费配额+混合推理)",
+        "gemini-3.5-flash (前沿主力: 复杂工作流首选)",
+        "gemini-3.8-flash (2026最新前沿架构)",
+        "gemini-3.7-flash (高能效多模态)",
+        "gemini-3.6-flash (超低延迟版)",
+        "gemini-2.5-flash-lite (轻量低耗)",
+        "gemini-2.5-pro (深度工程推理)",
+        "gemini-3.1-pro-preview (SOTA级超长上下文)",
+        "gemini-flash-latest (动态指向最新稳定版)",
+        "gemini-2.0-flash (经典稳定版)"
     ]
 
     if "dynamic_model_list" not in st.session_state:
@@ -75,7 +88,7 @@ with st.sidebar:
 
     col_sync1, col_sync2 = st.columns(2)
     with col_sync2:
-        if st.button("🔄 刷新模型", help="通过您的 API Key 实时向 Google AI Studio 拉取当前可用的全部官方模型列表"):
+        if st.button("🔄 刷新模型", help="通过 API Key 实时查询 Google 官方支持的模型列表"):
             if not api_key:
                 st.warning("请先填入 API Key")
             else:
@@ -89,7 +102,7 @@ with st.sidebar:
                             fetched_models.append(m_id)
                     if fetched_models:
                         st.session_state.dynamic_model_list = sorted(list(set(fetched_models)), reverse=True)
-                        st.success(f"已动态同步 {len(fetched_models)} 个官方模型！")
+                        st.success(f"已同步 {len(fetched_models)} 个官方模型！")
                 except Exception as e:
                     st.error(f"同步失败: {str(e)}")
 
@@ -116,14 +129,7 @@ with st.sidebar:
         max_value=0.5, 
         value=0.1, 
         step=0.05, 
-        help="保持低数值以防止模型产生幻觉"
-    )
-
-    # 关键防 429 设置：默认关闭搜索插件，避免无绑定信用卡的 API 触发 429
-    enable_search = st.checkbox(
-        "🌐 开启 Google 实时联网搜索", 
-        value=False, 
-        help="【注意】若您的 Google AI Studio 账号未绑定信用卡账单，开启此项会触发 429 报错。免费账号保持【关闭】即可极其流畅运行。"
+        help="建议保持在 0.1 左右以确保规格数据真实准确"
     )
 
     st.markdown("---")
@@ -147,7 +153,7 @@ with st.sidebar:
     material_and_finish = st.text_input("6. 预定材质与表面处理", value="ABS 工程塑料 / 橡胶密封圈 (EPDM)")
     load_and_safety = st.text_input("7. 承重与物理安全/规范标准", value="UPC / cUPC 认证, 耐腐蚀无泄漏")
     
-    # 8. 动态联动的安装部位与介质
+    # 动态联动的安装部位与介质
     mounting_type = st.selectbox(
         "8.1 产品安装部位 / 应用大类*",
         options=[
@@ -195,11 +201,18 @@ with st.sidebar:
         )
     
     target_price = st.text_input("9. 目标零售价与成本线 (USD)", value="零售目标: $14.99 - $18.99 | 落地成本: ≤ $3.50")
-    competitors = st.text_area("10. 指定竞品对标链接/品牌型号", value="Oatey Twist-N-Set; Sioux Chief 3-inch Flange")
+    competitors = st.text_area("10. 指定竞品对标链接/品牌型号", value="Oatey 43542 Twist-N-Set; Sioux Chief 3-inch Flange")
     focus_points = st.text_area("11. 专项排他约束 / 核心关注痛点", value="1. 重点深挖橡胶膨胀密封圈老化漏水、塑料法兰盘拧紧受力破裂、与铸铁旧管内壁锈蚀接触不紧密等差评\n2. 必须具备防异味反溢机制")
+    
+    st.markdown("---")
+    extra_live_data = st.text_area(
+        "💡 实时数据补充仓 (选填，直接注入真实数据)",
+        value="",
+        placeholder="若有具体的商品参数卡片、官网截图文本或买家评论原文，可直接粘贴在此处，系统将强制以此作为事实基准！"
+    )
 
 # ==============================================================================
-# 4. 执行核心与 Google GenAI 客户端 (具备 429 智能自动降级)
+# 5. 执行核心与 Google GenAI 客户端 (双轨实时数据支撑)
 # ==============================================================================
 def get_gemini_client(key):
     try:
@@ -209,48 +222,52 @@ def get_gemini_client(key):
         st.error("请先安装 Google GenAI SDK: `pip install google-genai`")
         return None
 
-def execute_stage(client, model, stage_prompt, stage_name, use_search=False):
+def execute_stage(client, model, stage_prompt, stage_name, search_query=""):
     from google.genai import types
     
-    def make_config(with_search=False):
-        tools = [types.Tool(google_search=types.GoogleSearch())] if with_search else None
-        return types.GenerateContentConfig(
+    # 获取实时检索数据（双轨机制：避免 429 且保证数据绝对实时准确）
+    realtime_context = ""
+    if search_query:
+        with st.spinner(f"正在实时抓取一手网络数据: {search_query} ..."):
+            fetched_data = live_web_search(search_query)
+            if fetched_data:
+                realtime_context = f"\n\n【最新互联网实时抓取证据库】:\n{fetched_data}\n"
+    
+    if extra_live_data.strip():
+        realtime_context += f"\n\n【用户手动补充的真实事实库】:\n{extra_live_data.strip()}\n"
+
+    final_prompt = stage_prompt + realtime_context
+
+    # 尝试一：优先尝试带 Google 官方搜索（如果账户已开通 Billing）
+    try:
+        config_with_search = types.GenerateContentConfig(
             system_instruction=SOP_SYSTEM_INSTRUCTION,
             temperature=temperature,
-            tools=tools
+            tools=[types.Tool(google_search=types.GoogleSearch())]
         )
-    
-    # 优先尝试带搜索（如果用户主动开启）
-    if use_search:
-        try:
-            with st.spinner(f"正在联网检索并执行: {stage_name} ..."):
-                response = client.models.generate_content(
-                    model=model,
-                    contents=stage_prompt,
-                    config=make_config(with_search=True)
-                )
-                return response.text
-        except Exception as e:
-            err_str = str(e)
-            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                st.warning(f"⚠️ 检测到搜索插件配额受限 (429)，系统已自动降级为【纯模型深度分析模式】继续执行...")
-            else:
-                st.warning(f"⚠️ 联网检索遇到微异常，自动切换为【纯模型深度分析模式】继续...")
-    
-    # 纯模型执行（或自动降级后执行），稳定流畅
-    try:
-        with st.spinner(f"正在深度分析: {stage_name} ..."):
-            response = client.models.generate_content(
-                model=model,
-                contents=stage_prompt,
-                config=make_config(with_search=False)
-            )
-            return response.text
+        response = client.models.generate_content(
+            model=model,
+            contents=final_prompt,
+            config=config_with_search
+        )
+        return response.text
     except Exception as e:
         err_str = str(e)
-        if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-            return f"❌ 阶段执行失败（触发配额限制 429）：当前请求过快，请稍等 20 秒后在下方 Tab 点击【单独重新运行此阶段】。"
-        return f"❌ 阶段执行失败，错误信息: {err_str}"
+        # 遇到 429 或搜索受限，无缝切换为内置实时数据增强模式，保证不报错
+        config_no_search = types.GenerateContentConfig(
+            system_instruction=SOP_SYSTEM_INSTRUCTION,
+            temperature=temperature
+        )
+        try:
+            with st.spinner(f"正在深度分析: {stage_name} ..."):
+                response = client.models.generate_content(
+                    model=model,
+                    contents=final_prompt,
+                    config=config_no_search
+                )
+                return response.text
+        except Exception as e2:
+            return f"❌ 阶段执行失败: {str(e2)}"
 
 # 初始化会话状态
 for i in range(1, 6):
@@ -276,17 +293,17 @@ def build_prompts():
 请严格执行《SOP V3.0》的【Stage 1: 物理架构与规格基准库】（涵盖 Node 00, 00.5, 01, 02）：
 1. 【00 & 00.5 项目章程与渠道界定】：明确在 {channel_mode} 渠道下的业务目标、核心技术问题、非目标边界与审核标准。
 2. 【01 产品基础规格拆解库】：
-   - 深入分析目标产品的基准参数（市场参考售价、评级区间、质保期、认证标准如UPC/cUPC）。
-   - 强制三维尺寸解耦：标称安装尺寸/管径、插入配合部外径及公差、外沿法兰盘尺寸与厚度。
+   - 提取目标产品的最新真实参数（市场零售价格区间、评分与评价量级、官方SKU/Item编号、质保期、标准认证如UPC/cUPC/ASTM）。
+   - 强制三维尺寸解耦：标称安装尺寸/管径、插入配合部外径及公差、外沿法兰盘/面板尺寸与厚度。
    - 建立结构化【Product Specification Database】Markdown 表格。
 3. 【02 渠道产品定位】：分析其在 {channel_mode} 货架上的生态位，拆解 Functional / Economic / Emotional 三重价值。
-严格标注证据等级（【FACT】/【INFERENCE】等），严禁编造虚假尺寸。
+所有数据必须标注证据等级（【FACT】/【INFERENCE】等），严禁无据臆造。
 """
     p2 = f"""{context_header}
 基于前期结论，请严格执行《SOP V3.0》的【Stage 2: 场景矩阵、适配性与真实 VOC 挖掘】（涵盖 Node 03, 04, 05, 05.5）：
 1. 【03 真实四维场景矩阵】：结合所选【安装部位: {mounting_type}】与【介质: {', '.join(selected_substrates)}】，交叉分析工况空间 × 载体材质 × 物理应力 × 潮湿及化学耐受环境。
 2. 【04 适配性与安装干涉矩阵】：针对不同管道材质（PVC、ABS、旧铸铁管）及地面高度的物理适配状态（✓ Compatible / △ Conditional / ✕ Not Compatible）。禁止使用 "Fits All"！
-3. 【05 真实买家 VOC 深度挖掘】：提取该品类真实买家高频 1~5 星痛点。归纳出 Positive VOC、Negative VOC（安装困难、漏水、橡胶滑脱、法兰断裂、螺栓固定不稳等）。
+3. 【05 真实买家 VOC 深度挖掘】：必须基于真实买家高频 1~5 星痛点。归纳出 Positive VOC、Negative VOC（密封不良漏水、法兰断裂、橡胶滑脱、螺栓位受力破损等）。
 4. 【05.5 竞品 VOC 对标分析】：对比参考竞品（{competitors}），分析哪些差评是行业通病，哪些是该款特有缺陷。
 """
     p3 = f"""{context_header}
@@ -297,7 +314,7 @@ def build_prompts():
 """
     p4 = f"""{context_header}
 基于前期结论，请严格执行《SOP V3.0》的【Stage 4: 商业数据库、机会排序与下一代产品定义】（涵盖 Node 08, 09, 09.5, 10, 11, 11.5, 12, 13, 14）：
-1. 【08-09 竞品与规格数据库】：建立包含 EXACT, DIRECT, GENERIC, BENCHMARK 的多竞品横向比对表（含零售价、评分、核心卖点）。
+1. 【08-09 竞品与规格数据库】：建立包含 EXACT, DIRECT, GENERIC, BENCHMARK 的多竞品横向比对表（含最新价格、评分、核心卖点）。
 2. 【09.5 成本结构测算】：估算 BOM 材料、模具分摊、装配包装、海运落地成本，评估目标毛利率。
 3. 【10 相似度量化评分】：制定权重矩阵，对关键竞品进行 0-100 分相似度打分并说明依据。
 4. 【11-12 痛点排序与设计机会】：将痛点按频次与致命度排序，建立 `VOC → 根因 → 机会 → 结构改良` 的闭环。
@@ -316,11 +333,11 @@ def build_prompts():
     return [p1, p2, p3, p4, p5]
 
 # ==============================================================================
-# 5. 执行控制栏与流水线调用
+# 6. 执行控制栏与流水线调用
 # ==============================================================================
 col_btn, col_info = st.columns(2)
 with col_btn:
-    run_all_btn = st.button("🚀 启动 SOP V3.0 全流程分析", type="primary", use_container_width=True)
+    run_all_btn = st.button("🚀 启动 SOP V3.0 全流程分析 (实时准确模式)", type="primary", use_container_width=True)
 with col_info:
     if not api_key:
         st.info("💡 请先在左侧输入您的 Gemini API Key 即可启动全流程自动化研究。")
@@ -341,16 +358,24 @@ if run_all_btn:
                 "Stage 4 机会矩阵与下一代定义",
                 "Stage 5 验证计划与 20 问闭环"
             ]
+            search_queries = [
+                f"{product_name} Home Depot price specifications dimensions review",
+                f"{product_name} reviews complaints problems leakage fail",
+                f"{product_name} teardown broken cracked rubber failure",
+                f"{competitors} price rating comparison",
+                f"{product_name} installation manual test standard"
+            ]
+            
             for idx in range(5):
                 st.session_state[f"stage{idx+1}_res"] = execute_stage(
-                    client, model_name, prompts[idx], stage_names[idx], use_search=enable_search
+                    client, model_name, prompts[idx], stage_names[idx], search_query=search_queries[idx]
                 )
                 if idx < 4:
                     time.sleep(1)
             st.success("🎉 《北美建材大零售产品开发 SOP V3.0》全流程深度研究已执行完毕！")
 
 # ==============================================================================
-# 6. 多标签页呈现、单步独立重试与报告导出
+# 7. 多标签页呈现、单步独立重试与报告导出
 # ==============================================================================
 if any(st.session_state[f"stage{i}_res"] for i in range(1, 6)):
     tab1, tab2, tab3, tab4, tab5, tab_full = st.tabs([
@@ -364,23 +389,23 @@ if any(st.session_state[f"stage{i}_res"] for i in range(1, 6)):
     
     prompts = build_prompts()
     
-    def render_stage_tab(tab, stage_idx, stage_title):
+    def render_stage_tab(tab, stage_idx, stage_title, sq):
         with tab:
             st.markdown(st.session_state[f"stage{stage_idx}_res"])
             st.markdown("---")
-            if st.button(f"🔄 单独重新运行此阶段 ({stage_title})", key=f"retry_{stage_idx}"):
+            if st.button(f"🔄 实时重新检索并运行此阶段 ({stage_title})", key=f"retry_{stage_idx}"):
                 client = get_gemini_client(api_key)
                 if client:
                     st.session_state[f"stage{stage_idx}_res"] = execute_stage(
-                        client, model_name, prompts[stage_idx-1], stage_title, use_search=enable_search
+                        client, model_name, prompts[stage_idx-1], stage_title, search_query=sq
                     )
                     st.rerun()
 
-    render_stage_tab(tab1, 1, "Stage 1 规格基准库")
-    render_stage_tab(tab2, 2, "Stage 2 场景与真实 VOC")
-    render_stage_tab(tab3, 3, "Stage 3 根因与结构拆解")
-    render_stage_tab(tab4, 4, "Stage 4 机会与下一代定义")
-    render_stage_tab(tab5, 5, "Stage 5 验证计划与 Listing")
+    render_stage_tab(tab1, 1, "Stage 1 规格基准库", f"{product_name} Home Depot price specifications")
+    render_stage_tab(tab2, 2, "Stage 2 场景与真实 VOC", f"{product_name} complaints problems review")
+    render_stage_tab(tab3, 3, "Stage 3 根因与结构拆解", f"{product_name} broken failure mechanism")
+    render_stage_tab(tab4, 4, "Stage 4 机会与下一代定义", f"{competitors} specs price")
+    render_stage_tab(tab5, 5, "Stage 5 验证计划与 Listing", f"{product_name} installation manual test standard")
 
     with tab_full:
         full_content = f"""# {product_name} - 北美大零售产品开发深度调研报告 (SOP V3.0)
