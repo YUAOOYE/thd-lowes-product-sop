@@ -42,7 +42,7 @@ SOP_SYSTEM_INSTRUCTION = """
 """
 
 # ==============================================================================
-# 3. 侧边栏：配置与超丰富项目启动单
+# 3. 侧边栏：引擎配置与超丰富项目启动单
 # ==============================================================================
 with st.sidebar:
     st.header("⚙️ 引擎配置")
@@ -87,8 +87,8 @@ with st.sidebar:
     if "dynamic_model_list" not in st.session_state:
         st.session_state.dynamic_model_list = preset_models
 
-    # 提供一键动态同步 Google 官方最新模型列表功能
-    col_sync1, col_sync2 = st.columns()
+    # 一键动态同步 Google 官方最新模型列表功能 (已修正为 st.columns(2))
+    col_sync1, col_sync2 = st.columns(2)
     with col_sync2:
         if st.button("🔄 刷新模型", help="通过您的 API Key 实时向 Google AI Studio 拉取当前可用的全部官方模型列表"):
             if not api_key:
@@ -108,7 +108,6 @@ with st.sidebar:
                 except Exception as e:
                     st.error(f"同步失败: {str(e)}")
 
-    # 选项整合
     display_options = list(st.session_state.dynamic_model_list)
     if "自定义模型名称 (手动输入...)" not in display_options:
         display_options.append("自定义模型名称 (手动输入...)")
@@ -119,7 +118,6 @@ with st.sidebar:
         index=0
     )
     
-    # 提取纯净的模型 ID
     if "自定义模型名称" in selected_option:
         model_name = st.text_input("请输入具体的模型 ID (如 gemini-3.8-flash):", value="gemini-3.8-flash")
     else:
@@ -243,7 +241,7 @@ for i in range(1, 6):
         st.session_state[f"stage{i}_res"] = ""
 
 # ==============================================================================
-# 5. 执行控制栏与多阶段调用
+# 5. 执行控制栏与多阶段调用 (已修正为 st.columns())
 # ==============================================================================
 col_btn, col_info = st.columns()
 with col_btn:
