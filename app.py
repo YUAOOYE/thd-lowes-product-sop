@@ -87,7 +87,7 @@ with st.sidebar:
     if "dynamic_model_list" not in st.session_state:
         st.session_state.dynamic_model_list = preset_models
 
-    # 一键动态同步 Google 官方最新模型列表功能 (已修正为 st.columns(2))
+    # 一键动态同步 Google 官方最新模型列表功能
     col_sync1, col_sync2 = st.columns(2)
     with col_sync2:
         if st.button("🔄 刷新模型", help="通过您的 API Key 实时向 Google AI Studio 拉取当前可用的全部官方模型列表"):
@@ -241,9 +241,9 @@ for i in range(1, 6):
         st.session_state[f"stage{i}_res"] = ""
 
 # ==============================================================================
-# 5. 执行控制栏与多阶段调用 (已修正为 st.columns())
+# 5. 执行控制栏与多阶段调用
 # ==============================================================================
-col_btn, col_info = st.columns()
+col_btn, col_info = st.columns(2)
 with col_btn:
     run_all_btn = st.button("🚀 启动 SOP V3.0 全流程分析", type="primary", use_container_width=True)
 with col_info:
