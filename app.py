@@ -63,7 +63,7 @@ SOP_SYSTEM_INSTRUCTION = """
 """
 
 # ==============================================================================
-# 3. 各供应商最新模型字典映射表与防 503 备选池
+# 3. 各供应商最新模型字典映射表与高可用防 503 备选池
 # ==============================================================================
 PROVIDER_MODELS = {
     "Google Gemini": [
@@ -116,7 +116,7 @@ PROVIDER_MODELS = {
     ]
 }
 
-# 自动故障转移备用模型表：当主模型过载时，瞬间切入高可用稳定底座
+# 自动故障转移备用模型表：主模型遇波峰时，秒切入全球算力池最大的稳定底座
 FALLBACK_MODELS = {
     "Google Gemini": ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash", "gemini-flash-latest"],
     "WorkBuddy (腾讯云 AI Agent)": ["deepseek-chat", "deepseek-reasoner", "hunyuan-pro", "gpt-4o"],
@@ -126,20 +126,30 @@ FALLBACK_MODELS = {
 }
 
 def is_transient_error(err_str):
-    transient_keywords = ["503", "overloaded", "unavailable", "server is busy", "502", "504", "rate limit", "temporarily", "429", "capacity"]
+    """判断是否为临时性负载/限流错误（值得退避重试）"""
+    transient_keywords = ["503", "overload", "unavailable", "server is busy", "502", "504", "rate limit", "temporarily", "429", "resource_exhausted", "capacity", "timeout"]
     return any(k in err_str.lower() for k in transient_keywords)
 
+def is_model_not_found_error(err_str):
+    """判断是否为模型不存在/无权限（应立即秒切下一个备选模型，不再浪费时间重试）"""
+    not_found_keywords = ["not found", "404", "invalid argument", "unsupported model", "permission denied", "not supported for generatecontent", "does not exist"]
+    return any(k in err_str.lower() for k in not_found_keywords)
+
 # ==============================================================================
-# 4. 辅助功能：外置实时搜索
+# 4. 辅助功能：带安全截断与数据清洗的实时搜索
 # ==============================================================================
-def live_web_search(query, max_results=4):
+def live_web_search(query, max_results=3):
     try:
         from duckduckgo_search import DDGS
         results = []
         with DDGS() as ddgs:
             for r in ddgs.text(query, max_results=max_results):
-                results.append(f"【来源: {r.get('title', '')}】({r.get('href', '')}):\n{r.get('body', '')}")
-        return "\n\n".join(results)
+                title = r.get('title', '').strip()
+                href = r.get('href', '').strip()
+                body = r.get('body', '').strip()[:300]  # 单条安全截断
+                results.append(f"【来源: {title}】({href}):\n{body}")
+        combined = "\n\n".join(results)
+        return combined[:1500]  # 总搜索上下文严格限制在 1500 字以内，杜绝超出限制
     except Exception:
         return ""
 
@@ -364,97 +374,123 @@ with st.sidebar:
     )
 
 # ==============================================================================
-# 6. 底层通用调用接口
+# 6. 底层通用调用接口 (带超时与自适应角色兼容)
 # ==============================================================================
 def call_single_attempt(provider_name, api_key_val, model_id, final_prompt, base_url_val=""):
     if provider_name == "Google Gemini":
         from google import genai
         from google.genai import types
         client = genai.Client(api_key=api_key_val)
-        config = types.GenerateContentConfig(
-            system_instruction=SOP_SYSTEM_INSTRUCTION,
-            temperature=temperature
-        )
-        resp = client.models.generate_content(
+        
+        config_args = {"system_instruction": SOP_SYSTEM_INSTRUCTION}
+        if "pro" in model_id.lower() or "flash" in model_id.lower():
+            config_args["temperature"] = temperature
+            
+        config = types.GenerateContentConfig(**config_args)
+        response = client.models.generate_content(
             model=model_id,
             contents=final_prompt,
             config=config
         )
-        return resp.text
+        return response.text
 
-    elif provider_name in ["WorkBuddy (腾讯云 AI Agent)", "DeepSeek (深度求索)", "OpenAI (ChatGPT)", "OpenAI 兼容中转 / OpenRouter / 自定义 API"]:
-        from openai import OpenAI
-        target_base_url = base_url_val or ("https://api.deepseek.com" if "DeepSeek" in provider_name else None)
-        client = OpenAI(api_key=api_key_val, base_url=target_base_url)
-        resp = client.chat.completions.create(
-            model=model_id,
-            messages=[
+    elif provider_name in ["WorkBuddy (腾讯云 AI Agent)", "OpenAI (ChatGPT)", "DeepSeek (深度求索)", "OpenAI 兼容中转 / OpenRouter / 自定义 API"]:
+        import openai
+        if provider_name == "WorkBuddy (腾讯云 AI Agent)":
+            client = openai.OpenAI(api_key=api_key_val, base_url=base_url_val or "https://api.workbuddy.cn/v1", timeout=90.0)
+        elif provider_name == "DeepSeek (深度求索)":
+            client = openai.OpenAI(api_key=api_key_val, base_url="https://api.deepseek.com", timeout=90.0)
+        elif provider_name == "OpenAI 兼容中转 / OpenRouter / 自定义 API":
+            client = openai.OpenAI(api_key=api_key_val, base_url=base_url_val or "https://openrouter.ai/api/v1", timeout=90.0)
+        else:
+            client = openai.OpenAI(api_key=api_key_val, timeout=90.0)
+
+        is_reasoner = any(k in model_id.lower() for k in ["o1", "o3", "reasoner"])
+        if is_reasoner:
+            messages = [
+                {"role": "user", "content": f"【系统指导准则】\n{SOP_SYSTEM_INSTRUCTION}\n\n【当前分析任务】\n{final_prompt}"}
+            ]
+            call_args = {"model": model_id, "messages": messages}
+        else:
+            messages = [
                 {"role": "system", "content": SOP_SYSTEM_INSTRUCTION},
                 {"role": "user", "content": final_prompt}
-            ],
-            temperature=temperature
-        )
-        return resp.choices[0].message.content
+            ]
+            call_args = {"model": model_id, "messages": messages, "temperature": temperature}
+
+        res = client.chat.completions.create(**call_args)
+        return res.choices[0].message.content
 
     elif provider_name == "Anthropic Claude":
         import anthropic
-        client = anthropic.Anthropic(api_key=api_key_val)
-        resp = client.messages.create(
+        client = anthropic.Anthropic(api_key=api_key_val, timeout=90.0)
+        res = client.messages.create(
             model=model_id,
-            max_tokens=4096,
             system=SOP_SYSTEM_INSTRUCTION,
-            messages=[
-                {"role": "user", "content": final_prompt}
-            ],
-            temperature=temperature
+            max_tokens=8192,
+            temperature=temperature,
+            messages=[{"role": "user", "content": final_prompt}]
         )
-        return resp.content[0].text
+        return res.content[0].text
     else:
         raise ValueError(f"未受支持的供应商: {provider_name}")
 
 # ==============================================================================
-# 7. 执行器封装 (平滑重试与动态状态)
+# 7. 高鲁棒性执行器封装 (智能秒切备用、平滑退避、动态自清)
 # ==============================================================================
 def execute_stage(provider_name, api_key_val, model_id, stage_prompt, stage_name, search_query="", base_url_val=""):
-    web_context = ""
+    realtime_context = ""
     if search_query:
-        with st.spinner(f"🔍 正在从全网检索真实工程与市场事实: `{search_query[:35]}...`"):
-            web_context = live_web_search(search_query)
+        with st.spinner(f"正在实时抓取一手网络数据: {search_query[:30]} ..."):
+            fetched_data = live_web_search(search_query)
+            if fetched_data:
+                realtime_context = f"\n\n【最新互联网实时抓取证据库】:\n{fetched_data}\n"
+    
+    if extra_live_data.strip():
+        realtime_context += f"\n\n【用户补充事实库】:\n{extra_live_data.strip()}\n"
 
-    supp_part = f"\n【用户注入真实事实仓】:\n{extra_live_data}\n" if extra_live_data.strip() else ""
-    web_part = f"\n【全网一手实时检索证据（以此为准）】:\n{web_context}\n" if web_context else ""
-    final_prompt = f"{stage_prompt}\n{supp_part}\n{web_part}"
+    final_prompt = stage_prompt + realtime_context
 
-    candidates = [model_id]
-    for fb in FALLBACK_MODELS.get(provider_name, []):
-        if fb not in candidates:
-            candidates.append(fb)
+    # 构建高可用候选模型梯队 (当前主选 -> 高可用保底模型)
+    candidate_models = [model_id]
+    if provider_name in FALLBACK_MODELS:
+        for fb in FALLBACK_MODELS[provider_name]:
+            if fb != model_id and fb not in candidate_models:
+                candidate_models.append(fb)
 
     last_err = ""
-    status_placeholder = st.empty()
-    for current_model in candidates:
-        for attempt in range(3):
-            try:
-                with st.spinner(f"⚡ 正在深度分析: {stage_name} (运行模型: `{current_model}`)..."):
-                    res = call_single_attempt(provider_name, api_key_val, current_model, final_prompt, base_url_val=base_url_val)
-                    status_placeholder.empty()
-                    return res
-            except Exception as e:
-                err_msg = str(e)
-                last_err = err_msg
-                if is_transient_error(err_msg):
-                    wait_sec = (attempt + 1) * 3
-                    status_placeholder.info(f"⏳ `{current_model}` 遇官方流量波峰，正在平滑重试 ({attempt+1}/3，等待 {wait_sec}s)...")
-                    time.sleep(wait_sec)
-                else:
-                    status_placeholder.empty()
-                    return f"❌ 阶段执行失败: {err_msg}"
+    status_bar = st.empty()
+    
+    for current_model in candidate_models[:3]:
+        # 每个模型最多重试 2 次，避免陷入漫长等待
+        for attempt in range(1, 3):
+            with st.spinner(f"⚡ 正在执行: {stage_name} (模型: `{current_model}`)..."):
+                try:
+                    result = call_single_attempt(provider_name, api_key_val, current_model, final_prompt, base_url_val)
+                    status_bar.empty()  # 成功后立即清除临时状态提示
+                    if current_model != model_id:
+                        st.caption(f"💡 注：主模型遇波峰，此阶段已通过高可用备选模型 `{current_model}` 成功生成。")
+                    return result
+                except Exception as e:
+                    last_err = str(e)
+                    # 1. 若是模型名不存在或无权限，绝不浪费时间重试，直接秒切下一个模型
+                    if is_model_not_found_error(last_err):
+                        status_bar.info(f"🔄 模型 `{current_model}` 暂未开放或不可用，正在直接秒切备选模型...")
+                        break
+                    # 2. 若是 503/429 负载波动，进行平滑退避
+                    elif is_transient_error(last_err):
+                        wait_sec = attempt * 3
+                        status_bar.info(f"⏳ `{current_model}` 遇到瞬时流量波峰，正在退避重试 ({attempt}/2，等待 {wait_sec}s)...")
+                        time.sleep(wait_sec)
+                    else:
+                        status_bar.empty()
+                        return f"❌ 阶段执行遇到异常: {last_err}"
         
-        status_placeholder.info(f"🔄 模型 `{current_model}` 持续繁忙，已秒切至高可用备选模型继续执行...")
-        time.sleep(1.5)
+        status_bar.info(f"🔄 模型 `{current_model}` 当前较拥挤，正在自动切至高可用备选模型...")
+        time.sleep(1.0)
 
-    status_placeholder.empty()
-    return f"❌ 阶段执行失败（服务器持续过载）：供应商 [{provider_name}] 繁忙，请重试。\n详情: {last_err}"
+    status_bar.empty()
+    return f"❌ 阶段执行失败：模型服务繁忙，请在下方点击【🔄 重新运行】即可重试。\n错误原因: {last_err}"
 
 # 初始化会话状态 (Stage 1 至 Stage 6)
 for i in range(1, 7):
@@ -607,7 +643,7 @@ if run_all_btn:
                 search_query=search_queries[idx], base_url_val=custom_base_url
             )
             if idx < 5:
-                time.sleep(2.5)
+                time.sleep(2.5)  # 2.5秒平滑缓冲，有效避免触发 API 频控 503/429
         st.success(f"🎉 【{product_name}】全流程深度研究已执行完毕！")
 
 # ==============================================================================
