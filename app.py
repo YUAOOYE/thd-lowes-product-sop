@@ -63,16 +63,21 @@ SOP_SYSTEM_INSTRUCTION = """
 """
 
 # ==============================================================================
-# 3. 各供应商最新模型字典映射表与自动防 503 备选池
+# 3. 各供应商最新模型字典映射表与防 503 备选池
 # ==============================================================================
 PROVIDER_MODELS = {
     "Google Gemini": [
-        "gemini-2.5-flash (Google官方推荐: 极速高智商+大容量池)",
-        "gemini-2.0-flash (经典极速稳定版)",
-        "gemini-1.5-flash (高稳定性主力)",
+        "gemini-2.0-flash (经典高稳定极速版: 算力池最大，几乎永不过载)",
+        "gemini-1.5-flash (长效高并发主力: 极少过载，推荐)",
+        "gemini-2.5-flash (2026官方高智能极速版)",
+        "gemini-3.6-flash (最新稳定高智能+超低延迟)",
+        "gemini-3.8-flash (前沿旗舰极速版)",
+        "gemini-3.5-flash (Agentic推荐: 复杂工作流专用)",
+        "gemini-3.7-flash (高能效多模态)",
         "gemini-1.5-pro (长上下文与深度逻辑旗舰)",
-        "gemini-2.5-pro (前沿推理旗舰)",
-        "gemini-flash-latest (动态最新版)"
+        "gemini-2.5-pro (前沿深度推理旗舰)",
+        "gemini-3.1-pro-preview (SOTA级超长上下文与深度逻辑)",
+        "gemini-flash-latest (动态指向最新稳定版)"
     ],
     "WorkBuddy (腾讯云 AI Agent)": [
         "deepseek-reasoner (DeepSeek-R1 深度思考推理大模型)",
@@ -111,12 +116,13 @@ PROVIDER_MODELS = {
     ]
 }
 
+# 自动故障转移备用模型表：当主模型过载时，瞬间切入高可用稳定底座
 FALLBACK_MODELS = {
-    "Google Gemini": ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-flash-latest"],
-    "WorkBuddy (腾讯云 AI Agent)": ["deepseek-reasoner", "deepseek-chat", "hunyuan-pro", "gpt-4o"],
-    "DeepSeek (深度求索)": ["deepseek-reasoner", "deepseek-chat"],
-    "OpenAI (ChatGPT)": ["o3-mini", "gpt-4o", "gpt-4o-mini"],
-    "Anthropic Claude": ["claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
+    "Google Gemini": ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash", "gemini-flash-latest"],
+    "WorkBuddy (腾讯云 AI Agent)": ["deepseek-chat", "deepseek-reasoner", "hunyuan-pro", "gpt-4o"],
+    "DeepSeek (深度求索)": ["deepseek-chat", "deepseek-reasoner"],
+    "OpenAI (ChatGPT)": ["gpt-4o-mini", "gpt-4o", "o3-mini"],
+    "Anthropic Claude": ["claude-3-5-haiku-20241022", "claude-3-5-sonnet-20241022", "claude-3-7-sonnet-20250219"]
 }
 
 def is_transient_error(err_str):
@@ -178,18 +184,44 @@ with st.sidebar:
     elif provider == "DeepSeek (深度求索)":
         custom_base_url = "https://api.deepseek.com"
 
-    current_models = list(PROVIDER_MODELS[provider])
+    if f"dynamic_models_{provider}" not in st.session_state:
+        st.session_state[f"dynamic_models_{provider}"] = list(PROVIDER_MODELS[provider])
+
+    current_models = list(st.session_state[f"dynamic_models_{provider}"])
     if "自定义模型名称 (手动输入...)" not in current_models:
         current_models.append("自定义模型名称 (手动输入...)")
-        
-    selected_model_option = st.selectbox(
-        f"选择模型 ({provider.split(' ')[0]} 专属模型)",
-        options=current_models,
-        index=0
-    )
+
+    col_m1, col_m2 = st.columns((3, 1))
+    with col_m1:
+        selected_model_option = st.selectbox(
+            f"选择模型 ({provider.split(' ')[0]} 专属模型)",
+            options=current_models,
+            index=0
+        )
+    with col_m2:
+        if provider == "Google Gemini":
+            if st.button("🔄 刷新", help="通过您的 API Key 实时查询 Google 官方所有最新可用模型并载入"):
+                if not api_key:
+                    st.warning("请先填入 Key")
+                else:
+                    try:
+                        from google import genai
+                        temp_client = genai.Client(api_key=api_key)
+                        fetched = []
+                        for m in temp_client.models.list():
+                            m_id = m.name.replace("models/", "") if hasattr(m, "name") else str(m)
+                            if "gemini" in m_id.lower():
+                                fetched.append(m_id)
+                        if fetched:
+                            merged = sorted(list(set(fetched + [m.split(" ")[0] for m in PROVIDER_MODELS["Google Gemini"]])), reverse=True)
+                            st.session_state[f"dynamic_models_{provider}"] = merged
+                            st.success(f"已同步 {len(fetched)} 个官方模型！")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"同步失败: {str(e)[:30]}")
     
     if "自定义模型名称" in selected_model_option:
-        default_custom = "gemini-2.5-flash" if "Gemini" in provider else ("deepseek-reasoner" if "WorkBuddy" in provider or "DeepSeek" in provider else "gpt-4o")
+        default_custom = "gemini-2.0-flash" if "Gemini" in provider else ("deepseek-chat" if "WorkBuddy" in provider or "DeepSeek" in provider else "gpt-4o")
         model_name = st.text_input("请输入具体模型 ID:", value=default_custom)
     else:
         model_name = selected_model_option.split(" ")[0].strip()
@@ -352,24 +384,29 @@ def execute_stage(provider_name, api_key_val, model_id, stage_prompt, stage_name
             candidates.append(fb)
 
     last_err = ""
+    status_placeholder = st.empty()
     for current_model in candidates:
         for attempt in range(3):
             try:
                 with st.spinner(f"⚡ 正在深度分析: {stage_name} (运行模型: `{current_model}`)..."):
-                    return call_single_attempt(provider_name, api_key_val, current_model, final_prompt, base_url_val=base_url_val)
+                    res = call_single_attempt(provider_name, api_key_val, current_model, final_prompt, base_url_val=base_url_val)
+                    status_placeholder.empty()
+                    return res
             except Exception as e:
                 err_msg = str(e)
                 last_err = err_msg
                 if is_transient_error(err_msg):
-                    wait_sec = (attempt + 1) * 2
-                    st.warning(f"⚠️ `{current_model}` 遭遇负载波动，正在自动重试 ({attempt+1}/3，等待 {wait_sec}s)...")
+                    wait_sec = (attempt + 1) * 3
+                    status_placeholder.info(f"⏳ `{current_model}` 遇官方流量波峰，正在平滑重试 ({attempt+1}/3，等待 {wait_sec}s)...")
                     time.sleep(wait_sec)
                 else:
+                    status_placeholder.empty()
                     return f"❌ 阶段执行失败: {err_msg}"
         
-        st.warning(f"⚠️ 模型 `{current_model}` 目前过载，正在自动切换至备选模型继续执行...")
-        time.sleep(2)
+        status_placeholder.info(f"🔄 模型 `{current_model}` 持续繁忙，已秒切至高可用备选模型继续执行...")
+        time.sleep(1.5)
 
+    status_placeholder.empty()
     return f"❌ 阶段执行失败（服务器持续过载）：供应商 [{provider_name}] 繁忙，请重试。\n详情: {last_err}"
 
 # 初始化会话状态 (Stage 1 至 Stage 6)
@@ -494,7 +531,7 @@ if run_all_btn:
     elif not product_name or not nominal_size or not product_url:
         st.error("启动失败：启动单中的品名、开孔尺寸、产品链接为必填项。")
     else:
-        # 1. 核心关键修复：启动新产品前，立即彻底清空上一产品的全部残留缓存！
+        # 启动新产品前，立即彻底清空上一产品的残留缓存
         for i in range(1, 7):
             st.session_state[f"stage{i}_res"] = ""
         st.session_state["analyzed_product_name"] = product_name
@@ -523,7 +560,7 @@ if run_all_btn:
                 search_query=search_queries[idx], base_url_val=custom_base_url
             )
             if idx < 5:
-                time.sleep(1)
+                time.sleep(2.5)
         st.success(f"🎉 【{product_name}】全流程深度研究已执行完毕！")
 
 # ==============================================================================
