@@ -144,7 +144,7 @@ def live_web_search(query, max_results=4):
         return ""
 
 # ==============================================================================
-# 5. 侧边栏：配置与启动单
+# 5. 侧边栏：配置与干净无残留启动单
 # ==============================================================================
 with st.sidebar:
     st.header("⚙️ 多模型引擎配置")
@@ -240,29 +240,69 @@ with st.sidebar:
     st.markdown("---")
     st.header("📋 V3.0 丰富版项目启动单")
     
+    # 示例模板可选载入器（默认不加载，输入框完全留空）
+    with st.expander("💡 快速填入示例产品模板 (可选)"):
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            if st.button("📦 载入【地板出风口 4x10】示例"):
+                st.session_state["p_name"] = "Decorative Floor Register (美标装饰性地板出风口 4x10)"
+                st.session_state["p_url"] = "https://www.homedepot.com/b/Heating-Venting-Cooling-HVAC-Supplies-Registers-Grilles/Floor-Register/N-5yc1vZc4ncZ1z0vj6i"
+                st.session_state["p_size"] = "4x10 inches (标称风管开孔)"
+                st.session_state["p_mat"] = "重型铸铝 (Cast Aluminum) / 哑光黑粉末喷涂 (Matte Black)"
+                st.session_state["p_load"] = "承重 >= 300 lbs, 防卡安全孔隙 < 9.5 mm"
+                st.session_state["p_price"] = "零售目标: $14.99 - $19.99 | 落地成本: <= $4.20"
+                st.session_state["p_comp"] = "Decor Grates 4x10 Cast Aluminum; Accord Ventilation 4x10 Register"
+                st.session_state["p_focus"] = "1. 重点深挖量错表面尺寸退货\n2. 重点考察细高跟卡死与安全防护\n3. 重点解决踩踏变形与机械松动"
+                st.session_state["p_imgs"] = "- [出风口测量与结构部位对照图](https://drive.google.com/file/d/1xZLbD0u2HuxXqasLykMmyg9UjLAE--IV/view?usp=drivesdk)\n- [4x10美标地板出风口四叶草格栅设计对比总图](https://drive.google.com/file/d/1G2kMu310d7Dz9Yu8xEtJf7GwHPHxp3AB/view?usp=drivesdk)\n- [4个四叶草优化设计方案(现代畅销款)](https://drive.google.com/file/d/1swL8WVegxnRSBU3eEes4PiKDd7T17-84/view?usp=drivesdk)"
+                st.rerun()
+        with col_t2:
+            if st.button("🧹 一键清空所有输入框"):
+                for k in ["p_name", "p_url", "p_size", "p_mat", "p_load", "p_price", "p_comp", "p_focus", "p_imgs"]:
+                    st.session_state[k] = ""
+                st.rerun()
+
     channel_mode = st.selectbox(
-        "1. 目标零售渠道*",
+        "1. 目标零售渠道 :red[* (必选)]",
         options=["The Home Depot (THD)", "Lowe's", "Dual-Channel (THD + Lowe's 跨渠道对标)"],
         index=0
     )
     
     project_type = st.selectbox(
-        "2. 项目核心类型*",
+        "2. 项目核心类型 :red[* (必选)]",
         options=["竞品差评归因与改良", "新品自主定义开发", "Listing 深度优化", "Buyer 选品提案", "成本结构重构", "规格升级"]
     )
     
-    product_name = st.text_input("3. 目标品名 (英文 + 中文)*", value="Decorative Floor Register (美标装饰性地板出风口 4x10)")
-    product_url = st.text_input("4. 目标产品官方链接 / SKU*", value="https://www.homedepot.com/b/Heating-Venting-Cooling-HVAC-Supplies-Registers-Grilles/Floor-Register/N-5yc1vZc4ncZ1z0vj6i")
-    
-    nominal_size = st.text_input("5. 标称开孔/关键尺寸基准*", value="4x10 inches (标称风管开孔)")
-    material_and_finish = st.text_input("6. 预定材质与表面处理", value="重型铸铝 (Cast Aluminum) / 哑光黑粉末喷涂 (Matte Black Powder Coat)")
-    load_and_safety = st.text_input("7. 承重/受力与安全规范标准", value="承重 >= 300 lbs, 防卡安全孔隙 < 9.5 mm")
+    product_name = st.text_input(
+        "3. 目标品名 (英文 + 中文) :red[* (必填)]", 
+        value=st.session_state.get("p_name", ""), 
+        placeholder="例如：3/4 in. Plastic Half Clamp with Nail 或 Floor Register"
+    )
+    product_url = st.text_input(
+        "4. 目标产品官方链接 / SKU :red[* (必填)]", 
+        value=st.session_state.get("p_url", ""), 
+        placeholder="例如：The Home Depot / Lowe's 详情页链接或 Store SKU / Item #"
+    )
+    nominal_size = st.text_input(
+        "5. 标称开孔/关键尺寸基准 :red[* (必填)]", 
+        value=st.session_state.get("p_size", ""), 
+        placeholder="例如：3/4 inch、4x10 inches 等管径或开孔基准"
+    )
+    material_and_finish = st.text_input(
+        "6. 预定材质与表面处理 (选填)", 
+        value=st.session_state.get("p_mat", ""), 
+        placeholder="例如：耐冲击塑料、铸铝哑光黑喷粉、镀锌钢等"
+    )
+    load_and_safety = st.text_input(
+        "7. 承重/受力与安全规范标准 (选填)", 
+        value=st.session_state.get("p_load", ""), 
+        placeholder="例如：抗压防裂、承重 >= 300 lbs、耐腐蚀无泄漏等"
+    )
     
     mounting_type = st.selectbox(
-        "8.1 产品安装部位 / 应用大类*",
+        "8.1 产品安装部位 / 应用大类 :red[* (必选)]",
         options=[
-            "地面安装 (Floor)",
             "厨卫/橱柜/台面/管道 (Kitchen, Bath & Plumbing)",
+            "地面安装 (Floor)",
             "墙面/天花板安装 (Wall & Ceiling)",
             "门窗/出入口五金 (Doors & Hardware)",
             "户外/甲板/庭院 (Outdoor & Deck)",
@@ -273,40 +313,47 @@ with st.sidebar:
     )
 
     substrate_map = {
+        "厨卫/橱柜/台面/管道 (Kitchen, Bath & Plumbing)": [
+            "PEX/铜管/PVC管", "木龙骨/立柱 (Wood Studs)", "水泥砂浆底座", "瓷砖地面/台面 (Tile)", "木质底板 (Subfloor)"
+        ],
         "地面安装 (Floor)": [
             "实木地板 (Hardwood)", "锁扣地板 (LVP/SPC)", "瓷砖 (Tile)", "地毯 (Carpet)", "水泥地面 (Concrete)"
         ],
-        "厨卫/橱柜/台面/管道 (Kitchen, Bath & Plumbing)": [
-            "PVC/ABS 排水管", "铸铁排水管 (Cast Iron)", "瓷砖地面 (Tile)", "木质底板 (Subfloor)"
-        ],
         "墙面/天花板安装 (Wall & Ceiling)": [
-            "石膏板 (Drywall/Sheetrock)", "木龙骨 (Wood Studs)", "集成吊顶板 (Drop Ceiling Tile)"
+            "石膏板 (Drywall/Sheetrock)", "木龙骨 (Wood Studs)", "集成吊顶板 (Drop Ceiling Tile)", "砖石/水泥墙 (Masonry)"
         ]
     }
 
-    current_options = substrate_map.get(mounting_type, ["实木地板 (Hardwood)", "锁扣地板 (LVP/SPC)"])
+    current_options = substrate_map.get(mounting_type, ["常规硬质基体"])
     selected_substrates = st.multiselect(
-        "8.2 目标安装介质/接触材质*",
+        "8.2 目标安装介质/接触材质 :red[* (必选)]",
         options=current_options,
         default=current_options[:2] if len(current_options) >= 2 else current_options
     )
     
-    target_price = st.text_input("9. 目标零售价与成本线 (USD)", value="零售目标: $14.99 - $19.99 | 落地成本: ≤ $4.20")
-    competitors = st.text_area("10. 指定竞品对标链接/品牌型号 (选填)", value="Decor Grates 4x10 Cast Aluminum; Accord Ventilation 4x10 Register")
-    focus_points = st.text_area("11. 专项排他约束 / 核心关注痛点 (选填)", value="1. 重点深挖买家因量错表面尺寸导致的退货\n2. 重点考察细高跟卡死与安全防护\n3. 重点解决踩踏变形与机械松动问题")
-
-    default_image_refs = """- [出风口测量与结构部位对照图](https://drive.google.com/file/d/1xZLbD0u2HuxXqasLykMmyg9UjLAE--IV/view?usp=drivesdk) (风洞口测量、下沉风门箱体、可调百叶拨片、生锈松动痛点)
-- [4x10美标地板出风口四叶草格栅设计对比总图](https://drive.google.com/file/d/1G2kMu310d7Dz9Yu8xEtJf7GwHPHxp3AB/view?usp=drivesdk) (原版6叶草基准 vs 推荐4叶草黄金比例 vs 3叶草大徽章款)
-- [4个四叶草优化设计方案(现代畅销款)](https://drive.google.com/file/d/1swL8WVegxnRSBU3eEes4PiKDd7T17-84/view?usp=drivesdk) (通风率64.85%，防卡鞋跟合格，美标推荐爆款)
-- [3个四叶草优化设计方案(经典大徽章款)](https://drive.google.com/file/d/1_dZjToDqAuaeW5DV6T-xuZBY0OLpIO9i/view?usp=drivesdk) (豪华大徽章，通风率71.5%，高端大宅款)
-- [现代几何CAD概念设计图](https://drive.google.com/file/d/1LxhNMvv8VXUO_-RYKGLXVG81AlMtEUNZ/view?usp=drivesdk) (菱形编织纹、V型人字纹与包豪斯线条设计)
-- [4x10哑光黑美标地板出风口设计概念图](https://drive.google.com/file/d/1CLO5J8bLdjDQ28IC-BDULo_j6up7qIlL/view?usp=drivesdk)"""
+    target_price = st.text_input(
+        "9. 目标零售价与成本线 (USD) (选填)", 
+        value=st.session_state.get("p_price", ""), 
+        placeholder="例如：零售 $4.99 - $7.99 | 落地成本 <= $1.20"
+    )
+    competitors = st.text_area(
+        "10. 指定竞品对标链接/品牌型号 (选填)", 
+        value=st.session_state.get("p_comp", ""), 
+        placeholder="输入参考竞品的品牌型号或详情链接；若留空，系统将全网自动检索匹配竞品",
+        height=80
+    )
+    focus_points = st.text_area(
+        "11. 专项排他约束 / 核心关注痛点 (选填)", 
+        value=st.session_state.get("p_focus", ""), 
+        placeholder="输入希望重点深挖的买家差评痛点或改进方向；若留空，系统将进行全面深度调研",
+        height=80
+    )
 
     image_ref_urls = st.text_area(
-        "12. 产品部位图与样品图链接库 (自动图文对照，仅用于对应产品)*",
-        value=default_image_refs,
-        height=120,
-        help="系统将在分析专业术语、结构部位、尺寸测量及方案选型时强制嵌入对应图示链接"
+        "12. 产品部位图与样品图链接库 (选填，仅在需要图文对照时填入)",
+        value=st.session_state.get("p_imgs", ""),
+        height=80,
+        placeholder="粘贴产品部位图或样品的 Markdown 链接；若留空则不强制配图"
     )
 
     st.markdown("---")
@@ -366,7 +413,7 @@ def call_single_attempt(provider_name, api_key_val, model_id, final_prompt, base
         raise ValueError(f"未受支持的供应商: {provider_name}")
 
 # ==============================================================================
-# 7. 执行器封装
+# 7. 执行器封装 (平滑重试与动态状态)
 # ==============================================================================
 def execute_stage(provider_name, api_key_val, model_id, stage_prompt, stage_name, search_query="", base_url_val=""):
     web_context = ""
@@ -528,8 +575,8 @@ if "analyzed_product_name" in st.session_state and st.session_state["analyzed_pr
 if run_all_btn:
     if not api_key:
         st.error(f"启动失败：缺少 {provider.split(' ')[0]} API Key，请在左侧侧边栏配置。")
-    elif not product_name or not nominal_size or not product_url:
-        st.error("启动失败：启动单中的品名、开孔尺寸、产品链接为必填项。")
+    elif not product_name.strip() or not nominal_size.strip() or not product_url.strip():
+        st.error("启动失败：请填写所有标红【* (必填)】项（目标品名、尺寸基准、产品链接）。")
     else:
         # 启动新产品前，立即彻底清空上一产品的残留缓存
         for i in range(1, 7):
