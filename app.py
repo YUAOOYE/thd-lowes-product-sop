@@ -24,7 +24,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-header">🛠️ 北美建材大零售产品开发 SOP V3.0 系统</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">整合 The Home Depot (THD) 与 Lowe\'s 渠道标准 | 真实实时数据闭环 | 结构拆解与制造工艺 | 动态安装载体适配</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">多模型引擎联动 (Gemini / WorkBuddy / OpenAI / Claude / DeepSeek) | 实时网络证据闭环 | 结构拆解与制造工艺 | 动态安装载体适配</div>', unsafe_allow_html=True)
 
 # ==============================================================================
 # 2. SOP V3.0 核心系统提示词
@@ -42,7 +42,57 @@ SOP_SYSTEM_INSTRUCTION = """
 """
 
 # ==============================================================================
-# 3. 辅助功能：外置实时搜索（免 API Key 限制，直接抓取一手数据）
+# 3. 各供应商最新模型字典映射表 (包含 WorkBuddy)
+# ==============================================================================
+PROVIDER_MODELS = {
+    "Google Gemini": [
+        "gemini-3.6-flash (Google官方推荐: 最新稳定高智能+超低延迟)",
+        "gemini-3.8-flash (2026最新前沿旗舰极速版)",
+        "gemini-3.5-flash (Agentic推荐: 复杂工作流专用)",
+        "gemini-3.7-flash (高能效多模态)",
+        "gemini-3.1-pro-preview (SOTA级超长上下文与深度逻辑)",
+        "gemini-flash-latest (动态指向最新稳定版)",
+        "gemini-2.0-flash (经典兼容版本)"
+    ],
+    "WorkBuddy (腾讯云 AI Agent)": [
+        "deepseek-reasoner (DeepSeek-R1 深度思考推理大模型)",
+        "deepseek-chat (DeepSeek-V3 办公与分析主力模型)",
+        "hunyuan-pro (腾讯混元深度思考与通用旗舰)",
+        "hunyuan-standard (腾讯混元标准版: 极速低耗)",
+        "claude-3-7-sonnet (混合推理旗舰: 强逻辑与混合思考)",
+        "gpt-4o (全能旗舰多模态: 均衡首选)"
+    ],
+    "OpenAI (ChatGPT)": [
+        "gpt-4.5-preview (2026最新旗舰: 深度世界知识与多模态)",
+        "o3-mini (最新高能效深度推理模型 / 思考链)",
+        "o1 (旗舰级深度推理大模型)",
+        "o1-mini (轻量快速推理模型)",
+        "gpt-4o (全能旗舰: 速度、多模态与工程解析平衡首选)",
+        "gpt-4o-mini (极速高性价比工作流)",
+        "chatgpt-4o-latest (始终指向ChatGPT最新动态版)"
+    ],
+    "Anthropic Claude": [
+        "claude-3-7-sonnet-20250219 (最新混合推理旗舰: 强逻辑与混合思考)",
+        "claude-3-5-sonnet-20241022 (工程级公认最强代码与结构拆解)",
+        "claude-3-5-haiku-20241022 (极速轻量低延迟)",
+        "claude-3-opus-20240229 (长篇深度报告与商业论证)"
+    ],
+    "DeepSeek (深度求索)": [
+        "deepseek-reasoner (DeepSeek-R1 旗舰推理: 显式思考链分析)",
+        "deepseek-chat (DeepSeek-V3 通用主力: 极高性价比与强中文理解)"
+    ],
+    "OpenAI 兼容中转 / OpenRouter / 自定义 API": [
+        "deepseek-ai/DeepSeek-R1",
+        "deepseek-ai/DeepSeek-V3",
+        "anthropic/claude-3.7-sonnet",
+        "openai/gpt-4o",
+        "meta-llama/llama-3.3-70b-instruct",
+        "qwen/qwen-2.5-72b-instruct"
+    ]
+}
+
+# ==============================================================================
+# 4. 辅助功能：外置实时搜索（全平台模型共享一手实时网络证据）
 # ==============================================================================
 def live_web_search(query, max_results=4):
     try:
@@ -56,70 +106,65 @@ def live_web_search(query, max_results=4):
         return ""
 
 # ==============================================================================
-# 4. 侧边栏：引擎配置与超丰富项目启动单
+# 5. 侧边栏：多供应商引擎联动配置与超丰富项目启动单
 # ==============================================================================
 with st.sidebar:
-    st.header("⚙️ 引擎配置")
+    st.header("⚙️ 多模型引擎配置")
     
-    default_key = ""
-    if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
-        default_key = st.secrets["GEMINI_API_KEY"]
-    else:
-        default_key = os.environ.get("GEMINI_API_KEY", "")
-        
-    api_key_input = st.text_input("Gemini API Key", value=default_key, type="password", help="从 Google AI Studio 获取")
-    api_key = api_key_input or default_key
-
-    preset_models = [
-        "gemini-2.5-flash (推荐: 极高免费配额+混合推理)",
-        "gemini-3.5-flash (前沿主力: 复杂工作流首选)",
-        "gemini-3.8-flash (2026最新前沿架构)",
-        "gemini-3.7-flash (高能效多模态)",
-        "gemini-3.6-flash (超低延迟版)",
-        "gemini-2.5-flash-lite (轻量低耗)",
-        "gemini-2.5-pro (深度工程推理)",
-        "gemini-3.1-pro-preview (SOTA级超长上下文)",
-        "gemini-flash-latest (动态指向最新稳定版)",
-        "gemini-2.0-flash (经典稳定版)"
-    ]
-
-    if "dynamic_model_list" not in st.session_state:
-        st.session_state.dynamic_model_list = preset_models
-
-    col_sync1, col_sync2 = st.columns(2)
-    with col_sync2:
-        if st.button("🔄 刷新模型", help="通过 API Key 实时查询 Google 官方支持的模型列表"):
-            if not api_key:
-                st.warning("请先填入 API Key")
-            else:
-                try:
-                    from google import genai
-                    temp_client = genai.Client(api_key=api_key)
-                    fetched_models = []
-                    for m in temp_client.models.list():
-                        m_id = m.name.replace("models/", "") if hasattr(m, "name") else str(m)
-                        if "gemini" in m_id.lower():
-                            fetched_models.append(m_id)
-                    if fetched_models:
-                        st.session_state.dynamic_model_list = sorted(list(set(fetched_models)), reverse=True)
-                        st.success(f"已同步 {len(fetched_models)} 个官方模型！")
-                except Exception as e:
-                    st.error(f"同步失败: {str(e)}")
-
-    display_options = list(st.session_state.dynamic_model_list)
-    if "自定义模型名称 (手动输入...)" not in display_options:
-        display_options.append("自定义模型名称 (手动输入...)")
-
-    selected_option = st.selectbox(
-        "模型选择",
-        options=display_options,
+    # 1. 供应商选择
+    provider = st.selectbox(
+        "选择 API 供应商*",
+        options=list(PROVIDER_MODELS.keys()),
         index=0
     )
     
-    if "自定义模型名称" in selected_option:
-        model_name = st.text_input("请输入具体模型 ID:", value="gemini-2.5-flash")
+    # 根据不同供应商自动匹配 Secret Key 默认值
+    env_map = {
+        "Google Gemini": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        "WorkBuddy (腾讯云 AI Agent)": ["WORKBUDDY_API_KEY", "CODEBUDDY_API_KEY", "OPENAI_API_KEY"],
+        "OpenAI (ChatGPT)": ["OPENAI_API_KEY"],
+        "Anthropic Claude": ["ANTHROPIC_API_KEY"],
+        "DeepSeek (深度求索)": ["DEEPSEEK_API_KEY", "OPENAI_API_KEY"],
+        "OpenAI 兼容中转 / OpenRouter / 自定义 API": ["OPENROUTER_API_KEY", "OPENAI_API_KEY"]
+    }
+    
+    matched_key = ""
+    for env_k in env_map.get(provider, []):
+        if hasattr(st, "secrets") and env_k in st.secrets:
+            matched_key = st.secrets[env_k]
+            break
+        elif os.environ.get(env_k):
+            matched_key = os.environ.get(env_k)
+            break
+
+    api_key_label = f"{provider.split(' ')[0]} API Key*"
+    api_key = st.text_input(api_key_label, value=matched_key, type="password", help=f"请输入 {provider} 的访问凭证")
+    
+    # 自定义 Base URL (若选中 WorkBuddy、兼容端或 DeepSeek)
+    custom_base_url = ""
+    if provider == "WorkBuddy (腾讯云 AI Agent)":
+        custom_base_url = st.text_input("WorkBuddy API Base URL*", value="https://api.workbuddy.cn/v1", help="支持腾讯云 WorkBuddy / CodeBuddy 官方 Token Plan 或本地网关地址")
+    elif provider == "OpenAI 兼容中转 / OpenRouter / 自定义 API":
+        custom_base_url = st.text_input("自定义 API Base URL*", value="https://openrouter.ai/api/v1", help="支持中转接口如 OpenRouter、OneAPI、SiliconFlow 等")
+    elif provider == "DeepSeek (深度求索)":
+        custom_base_url = "https://api.deepseek.com"
+
+    # 2. 动态联动：根据选定供应商展示对应的最新模型列表
+    current_models = list(PROVIDER_MODELS[provider])
+    if "自定义模型名称 (手动输入...)" not in current_models:
+        current_models.append("自定义模型名称 (手动输入...)")
+        
+    selected_model_option = st.selectbox(
+        f"选择模型 ({provider.split(' ')[0]} 专属模型)",
+        options=current_models,
+        index=0
+    )
+    
+    if "自定义模型名称" in selected_model_option:
+        default_custom = "gemini-3.6-flash" if "Gemini" in provider else ("deepseek-reasoner" if "WorkBuddy" in provider or "DeepSeek" in provider else "gpt-4o")
+        model_name = st.text_input("请输入具体模型 ID:", value=default_custom)
     else:
-        model_name = selected_option.split(" ")[0].strip()
+        model_name = selected_model_option.split(" ")[0].strip()
         
     st.caption(f"当前生效模型: `{model_name}`")
     
@@ -129,7 +174,7 @@ with st.sidebar:
         max_value=0.5, 
         value=0.1, 
         step=0.05, 
-        help="建议保持在 0.1 左右以确保规格数据真实准确"
+        help="建议保持在 0.1 左右以确保数据真实准确"
     )
 
     st.markdown("---")
@@ -212,20 +257,9 @@ with st.sidebar:
     )
 
 # ==============================================================================
-# 5. 执行核心与 Google GenAI 客户端 (双轨实时数据支撑)
+# 6. 通用多模型调用执行器 (统一分发)
 # ==============================================================================
-def get_gemini_client(key):
-    try:
-        from google import genai
-        return genai.Client(api_key=key)
-    except ImportError:
-        st.error("请先安装 Google GenAI SDK: `pip install google-genai`")
-        return None
-
-def execute_stage(client, model, stage_prompt, stage_name, search_query=""):
-    from google.genai import types
-    
-    # 获取实时检索数据（双轨机制：避免 429 且保证数据绝对实时准确）
+def execute_stage(provider_name, api_key_val, model_id, stage_prompt, stage_name, search_query="", base_url_val=""):
     realtime_context = ""
     if search_query:
         with st.spinner(f"正在实时抓取一手网络数据: {search_query} ..."):
@@ -238,36 +272,62 @@ def execute_stage(client, model, stage_prompt, stage_name, search_query=""):
 
     final_prompt = stage_prompt + realtime_context
 
-    # 尝试一：优先尝试带 Google 官方搜索（如果账户已开通 Billing）
-    try:
-        config_with_search = types.GenerateContentConfig(
-            system_instruction=SOP_SYSTEM_INSTRUCTION,
-            temperature=temperature,
-            tools=[types.Tool(google_search=types.GoogleSearch())]
-        )
-        response = client.models.generate_content(
-            model=model,
-            contents=final_prompt,
-            config=config_with_search
-        )
-        return response.text
-    except Exception as e:
-        err_str = str(e)
-        # 遇到 429 或搜索受限，无缝切换为内置实时数据增强模式，保证不报错
-        config_no_search = types.GenerateContentConfig(
-            system_instruction=SOP_SYSTEM_INSTRUCTION,
-            temperature=temperature
-        )
+    with st.spinner(f"[{provider_name.split(' ')[0]} | {model_id}] 正在深度执行: {stage_name} ..."):
         try:
-            with st.spinner(f"正在深度分析: {stage_name} ..."):
+            # 模式 A: Google Gemini
+            if provider_name == "Google Gemini":
+                from google import genai
+                from google.genai import types
+                client = genai.Client(api_key=api_key_val)
+                config = types.GenerateContentConfig(
+                    system_instruction=SOP_SYSTEM_INSTRUCTION,
+                    temperature=temperature
+                )
                 response = client.models.generate_content(
-                    model=model,
+                    model=model_id,
                     contents=final_prompt,
-                    config=config_no_search
+                    config=config
                 )
                 return response.text
-        except Exception as e2:
-            return f"❌ 阶段执行失败: {str(e2)}"
+
+            # 模式 B: WorkBuddy / OpenAI / DeepSeek / 兼容中转
+            elif provider_name in ["WorkBuddy (腾讯云 AI Agent)", "OpenAI (ChatGPT)", "DeepSeek (深度求索)", "OpenAI 兼容中转 / OpenRouter / 自定义 API"]:
+                import openai
+                if provider_name == "WorkBuddy (腾讯云 AI Agent)":
+                    client = openai.OpenAI(api_key=api_key_val, base_url=base_url_val or "https://api.workbuddy.cn/v1")
+                elif provider_name == "DeepSeek (深度求索)":
+                    client = openai.OpenAI(api_key=api_key_val, base_url="https://api.deepseek.com")
+                elif provider_name == "OpenAI 兼容中转 / OpenRouter / 自定义 API":
+                    client = openai.OpenAI(api_key=api_key_val, base_url=base_url_val or "https://openrouter.ai/api/v1")
+                else:
+                    client = openai.OpenAI(api_key=api_key_val)
+
+                messages = [
+                    {"role": "system", "content": SOP_SYSTEM_INSTRUCTION},
+                    {"role": "user", "content": final_prompt}
+                ]
+                call_args = {"model": model_id, "messages": messages}
+                if not any(k in model_id.lower() for k in ["o1", "o3"]):
+                    call_args["temperature"] = temperature
+
+                res = client.chat.completions.create(**call_args)
+                return res.choices[0].message.content
+
+            # 模式 C: Anthropic Claude
+            elif provider_name == "Anthropic Claude":
+                import anthropic
+                client = anthropic.Anthropic(api_key=api_key_val)
+                res = client.messages.create(
+                    model=model_id,
+                    system=SOP_SYSTEM_INSTRUCTION,
+                    max_tokens=8192,
+                    temperature=temperature,
+                    messages=[{"role": "user", "content": final_prompt}]
+                )
+                return res.content[0].text
+
+        except Exception as e:
+            return f"❌ 阶段执行失败: {str(e)}"
 
 # 初始化会话状态
 for i in range(1, 6):
@@ -333,49 +393,48 @@ def build_prompts():
     return [p1, p2, p3, p4, p5]
 
 # ==============================================================================
-# 6. 执行控制栏与流水线调用
+# 7. 执行控制栏与流水线调用
 # ==============================================================================
 col_btn, col_info = st.columns(2)
 with col_btn:
     run_all_btn = st.button("🚀 启动 SOP V3.0 全流程分析 (实时准确模式)", type="primary", use_container_width=True)
 with col_info:
     if not api_key:
-        st.info("💡 请先在左侧输入您的 Gemini API Key 即可启动全流程自动化研究。")
+        st.info(f"💡 请先在左侧输入您的 {provider.split(' ')[0]} 凭证即可启动。")
 
 if run_all_btn:
     if not api_key:
-        st.error("启动失败：缺少 Gemini API Key，请在左侧侧边栏配置。")
+        st.error(f"启动失败：缺少 {provider.split(' ')[0]} API Key，请在左侧侧边栏配置。")
     elif not product_name or not nominal_size or not product_url:
         st.error("启动失败：启动单中的品名、开孔尺寸、产品链接为必填项。")
     else:
-        client = get_gemini_client(api_key)
-        if client:
-            prompts = build_prompts()
-            stage_names = [
-                "Stage 1 物理架构与规格库",
-                "Stage 2 场景适配与 VOC 挖掘",
-                "Stage 3 根因归因与结构制造",
-                "Stage 4 机会矩阵与下一代定义",
-                "Stage 5 验证计划与 20 问闭环"
-            ]
-            search_queries = [
-                f"{product_name} Home Depot price specifications dimensions review",
-                f"{product_name} reviews complaints problems leakage fail",
-                f"{product_name} teardown broken cracked rubber failure",
-                f"{competitors} price rating comparison",
-                f"{product_name} installation manual test standard"
-            ]
-            
-            for idx in range(5):
-                st.session_state[f"stage{idx+1}_res"] = execute_stage(
-                    client, model_name, prompts[idx], stage_names[idx], search_query=search_queries[idx]
-                )
-                if idx < 4:
-                    time.sleep(1)
-            st.success("🎉 《北美建材大零售产品开发 SOP V3.0》全流程深度研究已执行完毕！")
+        prompts = build_prompts()
+        stage_names = [
+            "Stage 1 物理架构与规格库",
+            "Stage 2 场景适配与 VOC 挖掘",
+            "Stage 3 根因归因与结构制造",
+            "Stage 4 机会矩阵与下一代定义",
+            "Stage 5 验证计划与 20 问闭环"
+        ]
+        search_queries = [
+            f"{product_name} Home Depot price specifications dimensions review",
+            f"{product_name} reviews complaints problems leakage fail",
+            f"{product_name} teardown broken cracked rubber failure",
+            f"{competitors} price rating comparison",
+            f"{product_name} installation manual test standard"
+        ]
+        
+        for idx in range(5):
+            st.session_state[f"stage{idx+1}_res"] = execute_stage(
+                provider, api_key, model_name, prompts[idx], stage_names[idx], 
+                search_query=search_queries[idx], base_url_val=custom_base_url
+            )
+            if idx < 4:
+                time.sleep(1)
+        st.success("🎉 《北美建材大零售产品开发 SOP V3.0》全流程深度研究已执行完毕！")
 
 # ==============================================================================
-# 7. 多标签页呈现、单步独立重试与报告导出
+# 8. 多标签页呈现、单步独立重试与报告导出
 # ==============================================================================
 if any(st.session_state[f"stage{i}_res"] for i in range(1, 6)):
     tab1, tab2, tab3, tab4, tab5, tab_full = st.tabs([
@@ -394,22 +453,22 @@ if any(st.session_state[f"stage{i}_res"] for i in range(1, 6)):
             st.markdown(st.session_state[f"stage{stage_idx}_res"])
             st.markdown("---")
             if st.button(f"🔄 实时重新检索并运行此阶段 ({stage_title})", key=f"retry_{stage_idx}"):
-                client = get_gemini_client(api_key)
-                if client:
-                    st.session_state[f"stage{stage_idx}_res"] = execute_stage(
-                        client, model_name, prompts[stage_idx-1], stage_title, search_query=sq
-                    )
-                    st.rerun()
+                st.session_state[f"stage{stage_idx}_res"] = execute_stage(
+                    provider, api_key, model_name, prompts[stage_idx-1], stage_title, 
+                    search_query=sq, base_url_val=custom_base_url
+                )
+                st.rerun()
 
     render_stage_tab(tab1, 1, "Stage 1 规格基准库", f"{product_name} Home Depot price specifications")
     render_stage_tab(tab2, 2, "Stage 2 场景与真实 VOC", f"{product_name} complaints problems review")
-    render_stage_tab(tab3, 3, "Stage 3 根因与结构拆解", f"{product_name} broken failure mechanism")
+    render_stage_tab(tab3, 3, "Stage 3 根因与结构拆解", f"{product_name} complaints problems review")
     render_stage_tab(tab4, 4, "Stage 4 机会与下一代定义", f"{competitors} specs price")
     render_stage_tab(tab5, 5, "Stage 5 验证计划与 Listing", f"{product_name} installation manual test standard")
 
     with tab_full:
         full_content = f"""# {product_name} - 北美大零售产品开发深度调研报告 (SOP V3.0)
 - **目标渠道**: {channel_mode}
+- **底层驱动引擎**: {provider} ({model_name})
 - **项目类型**: {project_type}
 - **生成时间**: {time.strftime('%Y-%m-%d %H:%M:%S')}
 - **标称尺寸**: {nominal_size}
