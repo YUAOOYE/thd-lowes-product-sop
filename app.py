@@ -24,7 +24,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-header">🛠️ 北美建材大零售产品开发 SOP V3.0 系统</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">多模型引擎联动 (Gemini / WorkBuddy / OpenAI / Claude / DeepSeek) | 实时网络证据闭环 | 结构拆解与制造工艺 | 动态安装载体适配</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">多模型引擎联动 (Gemini / WorkBuddy / OpenAI / Claude / DeepSeek) | 503 过载自动重试与智能切模 | 真实网络证据闭环 | 结构拆解与制造工艺</div>', unsafe_allow_html=True)
 
 # ==============================================================================
 # 2. SOP V3.0 核心系统提示词
@@ -42,7 +42,7 @@ SOP_SYSTEM_INSTRUCTION = """
 """
 
 # ==============================================================================
-# 3. 各供应商最新模型字典映射表 (包含 WorkBuddy)
+# 3. 各供应商最新模型字典映射表与自动防 503 备选池
 # ==============================================================================
 PROVIDER_MODELS = {
     "Google Gemini": [
@@ -91,6 +91,19 @@ PROVIDER_MODELS = {
     ]
 }
 
+# 自动故障转移备用模型表（当主模型遇到 503 过载时自动切入备用）
+FALLBACK_MODELS = {
+    "Google Gemini": ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.5-flash", "gemini-flash-latest"],
+    "WorkBuddy (腾讯云 AI Agent)": ["deepseek-reasoner", "deepseek-chat", "hunyuan-pro", "gpt-4o"],
+    "DeepSeek (深度求索)": ["deepseek-reasoner", "deepseek-chat"],
+    "OpenAI (ChatGPT)": ["o3-mini", "gpt-4o", "gpt-4o-mini"],
+    "Anthropic Claude": ["claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
+}
+
+def is_transient_error(err_str):
+    transient_keywords = ["503", "overloaded", "unavailable", "server is busy", "502", "504", "rate limit", "temporarily", "429", "capacity"]
+    return any(k in err_str.lower() for k in transient_keywords)
+
 # ==============================================================================
 # 4. 辅助功能：外置实时搜索（全平台模型共享一手实时网络证据）
 # ==============================================================================
@@ -111,14 +124,12 @@ def live_web_search(query, max_results=4):
 with st.sidebar:
     st.header("⚙️ 多模型引擎配置")
     
-    # 1. 供应商选择
     provider = st.selectbox(
         "选择 API 供应商*",
         options=list(PROVIDER_MODELS.keys()),
         index=0
     )
     
-    # 根据不同供应商自动匹配 Secret Key 默认值
     env_map = {
         "Google Gemini": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         "WorkBuddy (腾讯云 AI Agent)": ["WORKBUDDY_API_KEY", "CODEBUDDY_API_KEY", "OPENAI_API_KEY"],
@@ -140,7 +151,6 @@ with st.sidebar:
     api_key_label = f"{provider.split(' ')[0]} API Key*"
     api_key = st.text_input(api_key_label, value=matched_key, type="password", help=f"请输入 {provider} 的访问凭证")
     
-    # 自定义 Base URL (若选中 WorkBuddy、兼容端或 DeepSeek)
     custom_base_url = ""
     if provider == "WorkBuddy (腾讯云 AI Agent)":
         custom_base_url = st.text_input("WorkBuddy API Base URL*", value="https://api.workbuddy.cn/v1", help="支持腾讯云 WorkBuddy / CodeBuddy 官方 Token Plan 或本地网关地址")
@@ -149,7 +159,6 @@ with st.sidebar:
     elif provider == "DeepSeek (深度求索)":
         custom_base_url = "https://api.deepseek.com"
 
-    # 2. 动态联动：根据选定供应商展示对应的最新模型列表
     current_models = list(PROVIDER_MODELS[provider])
     if "自定义模型名称 (手动输入...)" not in current_models:
         current_models.append("自定义模型名称 (手动输入...)")
@@ -198,7 +207,6 @@ with st.sidebar:
     material_and_finish = st.text_input("6. 预定材质与表面处理", value="ABS 工程塑料 / 橡胶密封圈 (EPDM)")
     load_and_safety = st.text_input("7. 承重与物理安全/规范标准", value="UPC / cUPC 认证, 耐腐蚀无泄漏")
     
-    # 动态联动的安装部位与介质
     mounting_type = st.selectbox(
         "8.1 产品安装部位 / 应用大类*",
         options=[
@@ -257,7 +265,62 @@ with st.sidebar:
     )
 
 # ==============================================================================
-# 6. 通用多模型调用执行器 (统一分发)
+# 6. 单次底层模型调用器
+# ==============================================================================
+def call_single_attempt(provider_name, api_key_val, model_id, final_prompt, base_url_val=""):
+    if provider_name == "Google Gemini":
+        from google import genai
+        from google.genai import types
+        client = genai.Client(api_key=api_key_val)
+        config = types.GenerateContentConfig(
+            system_instruction=SOP_SYSTEM_INSTRUCTION,
+            temperature=temperature
+        )
+        response = client.models.generate_content(
+            model=model_id,
+            contents=final_prompt,
+            config=config
+        )
+        return response.text
+
+    elif provider_name in ["WorkBuddy (腾讯云 AI Agent)", "OpenAI (ChatGPT)", "DeepSeek (深度求索)", "OpenAI 兼容中转 / OpenRouter / 自定义 API"]:
+        import openai
+        if provider_name == "WorkBuddy (腾讯云 AI Agent)":
+            client = openai.OpenAI(api_key=api_key_val, base_url=base_url_val or "https://api.workbuddy.cn/v1")
+        elif provider_name == "DeepSeek (深度求索)":
+            client = openai.OpenAI(api_key=api_key_val, base_url="https://api.deepseek.com")
+        elif provider_name == "OpenAI 兼容中转 / OpenRouter / 自定义 API":
+            client = openai.OpenAI(api_key=api_key_val, base_url=base_url_val or "https://openrouter.ai/api/v1")
+        else:
+            client = openai.OpenAI(api_key=api_key_val)
+
+        messages = [
+            {"role": "system", "content": SOP_SYSTEM_INSTRUCTION},
+            {"role": "user", "content": final_prompt}
+        ]
+        call_args = {"model": model_id, "messages": messages}
+        if not any(k in model_id.lower() for k in ["o1", "o3"]):
+            call_args["temperature"] = temperature
+
+        res = client.chat.completions.create(**call_args)
+        return res.choices[0].message.content
+
+    elif provider_name == "Anthropic Claude":
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key_val)
+        res = client.messages.create(
+            model=model_id,
+            system=SOP_SYSTEM_INSTRUCTION,
+            max_tokens=8192,
+            temperature=temperature,
+            messages=[{"role": "user", "content": final_prompt}]
+        )
+        return res.content[0].text
+    else:
+        raise ValueError(f"未知供应商: {provider_name}")
+
+# ==============================================================================
+# 7. 具备自动重试与智能切模的健壮执行器 (彻底解决 503 过载)
 # ==============================================================================
 def execute_stage(provider_name, api_key_val, model_id, stage_prompt, stage_name, search_query="", base_url_val=""):
     realtime_context = ""
@@ -272,62 +335,35 @@ def execute_stage(provider_name, api_key_val, model_id, stage_prompt, stage_name
 
     final_prompt = stage_prompt + realtime_context
 
-    with st.spinner(f"[{provider_name.split(' ')[0]} | {model_id}] 正在深度执行: {stage_name} ..."):
-        try:
-            # 模式 A: Google Gemini
-            if provider_name == "Google Gemini":
-                from google import genai
-                from google.genai import types
-                client = genai.Client(api_key=api_key_val)
-                config = types.GenerateContentConfig(
-                    system_instruction=SOP_SYSTEM_INSTRUCTION,
-                    temperature=temperature
-                )
-                response = client.models.generate_content(
-                    model=model_id,
-                    contents=final_prompt,
-                    config=config
-                )
-                return response.text
+    # 候选模型队列：当前模型 -> 同门备选模型
+    candidate_models = [model_id]
+    if provider_name in FALLBACK_MODELS:
+        for fb in FALLBACK_MODELS[provider_name]:
+            if fb != model_id and fb not in candidate_models:
+                candidate_models.append(fb)
 
-            # 模式 B: WorkBuddy / OpenAI / DeepSeek / 兼容中转
-            elif provider_name in ["WorkBuddy (腾讯云 AI Agent)", "OpenAI (ChatGPT)", "DeepSeek (深度求索)", "OpenAI 兼容中转 / OpenRouter / 自定义 API"]:
-                import openai
-                if provider_name == "WorkBuddy (腾讯云 AI Agent)":
-                    client = openai.OpenAI(api_key=api_key_val, base_url=base_url_val or "https://api.workbuddy.cn/v1")
-                elif provider_name == "DeepSeek (深度求索)":
-                    client = openai.OpenAI(api_key=api_key_val, base_url="https://api.deepseek.com")
-                elif provider_name == "OpenAI 兼容中转 / OpenRouter / 自定义 API":
-                    client = openai.OpenAI(api_key=api_key_val, base_url=base_url_val or "https://openrouter.ai/api/v1")
-                else:
-                    client = openai.OpenAI(api_key=api_key_val)
+    last_err = ""
+    for current_model in candidate_models[:3]:
+        for attempt in range(1, 4):
+            with st.spinner(f"[{provider_name.split(' ')[0]} | {current_model}] 正在执行: {stage_name} (第 {attempt} 次尝试)..."):
+                try:
+                    result = call_single_attempt(provider_name, api_key_val, current_model, final_prompt, base_url_val)
+                    if current_model != model_id:
+                        st.info(f"💡 原选定模型当前服务器过载，系统已自动通过备选模型 `{current_model}` 成功完成 {stage_name}！")
+                    return result
+                except Exception as e:
+                    last_err = str(e)
+                    if is_transient_error(last_err):
+                        wait_sec = 3 * attempt
+                        st.warning(f"⚠️ 服务器偶发拥堵 (503 / 过载)，等待 {wait_sec} 秒后自动重试 (当前模型: {current_model})...")
+                        time.sleep(wait_sec)
+                    else:
+                        return f"❌ 阶段执行失败: {last_err}"
+        
+        st.warning(f"⚠️ 模型 `{current_model}` 目前全球请求量过大，正在自动切换至同厂商备选模型继续执行...")
+        time.sleep(2)
 
-                messages = [
-                    {"role": "system", "content": SOP_SYSTEM_INSTRUCTION},
-                    {"role": "user", "content": final_prompt}
-                ]
-                call_args = {"model": model_id, "messages": messages}
-                if not any(k in model_id.lower() for k in ["o1", "o3"]):
-                    call_args["temperature"] = temperature
-
-                res = client.chat.completions.create(**call_args)
-                return res.choices[0].message.content
-
-            # 模式 C: Anthropic Claude
-            elif provider_name == "Anthropic Claude":
-                import anthropic
-                client = anthropic.Anthropic(api_key=api_key_val)
-                res = client.messages.create(
-                    model=model_id,
-                    system=SOP_SYSTEM_INSTRUCTION,
-                    max_tokens=8192,
-                    temperature=temperature,
-                    messages=[{"role": "user", "content": final_prompt}]
-                )
-                return res.content[0].text
-
-        except Exception as e:
-            return f"❌ 阶段执行失败: {str(e)}"
+    return f"❌ 阶段执行失败（服务器持续过载 503）：供应商 [{provider_name}] 服务器繁忙，请稍候在下方 Tab 点击【重新运行】重试。\n错误详情: {last_err}"
 
 # 初始化会话状态
 for i in range(1, 6):
@@ -393,7 +429,7 @@ def build_prompts():
     return [p1, p2, p3, p4, p5]
 
 # ==============================================================================
-# 7. 执行控制栏与流水线调用
+# 8. 执行控制栏与流水线调用
 # ==============================================================================
 col_btn, col_info = st.columns(2)
 with col_btn:
@@ -434,7 +470,7 @@ if run_all_btn:
         st.success("🎉 《北美建材大零售产品开发 SOP V3.0》全流程深度研究已执行完毕！")
 
 # ==============================================================================
-# 8. 多标签页呈现、单步独立重试与报告导出
+# 9. 多标签页呈现、单步独立重试与报告导出
 # ==============================================================================
 if any(st.session_state[f"stage{i}_res"] for i in range(1, 6)):
     tab1, tab2, tab3, tab4, tab5, tab_full = st.tabs([
@@ -501,5 +537,4 @@ if any(st.session_state[f"stage{i}_res"] for i in range(1, 6)):
             data=full_content,
             file_name=f"{channel_mode.split(' ')[0]}_SOP_V3_{nominal_size.replace(' ', '_')}.md",
             mime="text/markdown",
-            use_container_width=True
-        )
+            use_container_width
