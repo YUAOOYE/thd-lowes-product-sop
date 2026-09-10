@@ -470,7 +470,7 @@ def build_prompts():
 # ==============================================================================
 # 8. 执行控制栏与流水线调用
 # ==============================================================================
-col_btn, col_clear, col_info = st.columns()
+col_btn, col_clear, col_info = st.columns(3)
 with col_btn:
     run_all_btn = st.button("🚀 启动 SOP V3.0 全流程分析 (实时准确模式)", type="primary", use_container_width=True)
 with col_clear:
