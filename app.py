@@ -27,7 +27,7 @@ st.markdown('<div class="main-header">🛠️ 北美建材大零售产品开发 
 st.markdown('<div class="sub-header">多模型引擎联动 (Gemini / WorkBuddy / OpenAI / Claude / DeepSeek) | 503 过载自动重试与智能切模 | 真实网络证据闭环 | 结构拆解与制造工艺</div>', unsafe_allow_html=True)
 
 # ==============================================================================
-# 2. SOP V3.0 核心系统提示词 (具备通用性与品类强隔离)
+# 2. SOP V3.0 核心系统提示词 (强制真实性与可核验超链接)
 # ==============================================================================
 SOP_SYSTEM_INSTRUCTION = """
 你现在担任北美大零售建材产品开发项目经理、资深工业设计分析顾问与结构工程专家。
@@ -59,7 +59,12 @@ SOP_SYSTEM_INSTRUCTION = """
    - 在解释产品物理结构、部位名称、测量方法、缺陷痛点以及下一代设计方案时，按需嵌入对应的【产品实际部位图、结构测量图或设计样品图】Markdown 链接。
    - 优先从输入单提供的【产品部位图与样品图链接库】中调用。若输入库与当前产品不符，则不要强行关联。
 
-7. 闭环验证：所有 P0 级设计改进必须能够追溯到明确的 VOC 痛点或竞品缺陷，并制定具体的 EVT/DVT/PVT 验证方法。
+7. 【真实性证据链与必须提供可核验超链接红线 (Zero-Hallucination & Mandatory Hyperlinks)】：
+   - 绝对杜绝空洞臆造与误导性假信息：严禁捏造具体售价、虚构买家评分、凭空编造 SKU 编码或伪造测试合格结论！
+   - 所有关于市场价格区间、买家真实吐槽原声、工程认证标准（ASTM / IBC / ADA 等）与竞品对比的核心观点，必须尽可能紧随其后附带可点击验证的 Markdown 超链接，格式为：`[来源名称/页面](https://...)`。
+   - 查不到时诚实标注：若某项具体参数在公开网络无法检索确认，严禁凭空臆测，必须明确标明 `【未找到公开源】` 或 `【公开数据无法验证】`，向用户披露不确定性，绝不提供看似真实实则误导的虚假信息！
+
+8. 闭环验证：所有 P0 级设计改进必须能够追溯到明确的 VOC 痛点或竞品缺陷，并制定具体的 EVT/DVT/PVT 验证方法。
 """
 
 # ==============================================================================
@@ -116,7 +121,6 @@ PROVIDER_MODELS = {
     ]
 }
 
-# 自动故障转移备用模型表：主模型遇波峰时，秒切入全球算力池最大的稳定底座
 FALLBACK_MODELS = {
     "Google Gemini": ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash", "gemini-flash-latest"],
     "WorkBuddy (腾讯云 AI Agent)": ["deepseek-chat", "deepseek-reasoner", "hunyuan-pro", "gpt-4o"],
@@ -126,12 +130,12 @@ FALLBACK_MODELS = {
 }
 
 def is_transient_error(err_str):
-    """判断是否为临时性负载/限流错误（值得退避重试）"""
+    """判断是否为临时性负载/限流错误"""
     transient_keywords = ["503", "overload", "unavailable", "server is busy", "502", "504", "rate limit", "temporarily", "429", "resource_exhausted", "capacity", "timeout"]
     return any(k in err_str.lower() for k in transient_keywords)
 
 def is_model_not_found_error(err_str):
-    """判断是否为模型不存在/无权限（应立即秒切下一个备选模型，不再浪费时间重试）"""
+    """判断是否为模型不存在/无权限（应立即秒切下一个备选模型）"""
     not_found_keywords = ["not found", "404", "invalid argument", "unsupported model", "permission denied", "not supported for generatecontent", "does not exist"]
     return any(k in err_str.lower() for k in not_found_keywords)
 
@@ -146,10 +150,10 @@ def live_web_search(query, max_results=3):
             for r in ddgs.text(query, max_results=max_results):
                 title = r.get('title', '').strip()
                 href = r.get('href', '').strip()
-                body = r.get('body', '').strip()[:300]  # 单条安全截断
+                body = r.get('body', '').strip()[:300]
                 results.append(f"【来源: {title}】({href}):\n{body}")
         combined = "\n\n".join(results)
-        return combined[:1500]  # 总搜索上下文严格限制在 1500 字以内，杜绝超出限制
+        return combined[:1500]
     except Exception:
         return ""
 
@@ -374,7 +378,7 @@ with st.sidebar:
     )
 
 # ==============================================================================
-# 6. 底层通用调用接口 (带超时与自适应角色兼容)
+# 6. 底层通用调用接口 (开启 Google 搜索 Grounding，并自动提取真实核验超链接)
 # ==============================================================================
 def call_single_attempt(provider_name, api_key_val, model_id, final_prompt, base_url_val=""):
     if provider_name == "Google Gemini":
@@ -382,17 +386,57 @@ def call_single_attempt(provider_name, api_key_val, model_id, final_prompt, base
         from google.genai import types
         client = genai.Client(api_key=api_key_val)
         
-        config_args = {"system_instruction": SOP_SYSTEM_INSTRUCTION}
+        # 核心防误导升级：开启 Google 官方 Search Grounding，直接抓取一手真实数据与可验证超链接
+        config_args = {
+            "system_instruction": SOP_SYSTEM_INSTRUCTION,
+            "tools": [types.Tool(google_search=types.GoogleSearch())]
+        }
         if "pro" in model_id.lower() or "flash" in model_id.lower():
             config_args["temperature"] = temperature
             
-        config = types.GenerateContentConfig(**config_args)
-        response = client.models.generate_content(
-            model=model_id,
-            contents=final_prompt,
-            config=config
-        )
-        return response.text
+        try:
+            config = types.GenerateContentConfig(**config_args)
+            response = client.models.generate_content(
+                model=model_id,
+                contents=final_prompt,
+                config=config
+            )
+        except Exception:
+            # 容错降级：若特定极少数模型不支持 tools 则退回标准调用
+            config_args.pop("tools", None)
+            config = types.GenerateContentConfig(**config_args)
+            response = client.models.generate_content(
+                model=model_id,
+                contents=final_prompt,
+                config=config
+            )
+
+        res_text = response.text or ""
+
+        # 智能提取 Google 官方检索到的真实来源超链接并挂载文末，供用户直接点击核验
+        grounding_links = []
+        try:
+            if hasattr(response, "candidates") and response.candidates:
+                candidate = response.candidates[0]
+                if hasattr(candidate, "grounding_metadata") and candidate.grounding_metadata:
+                    gm = candidate.grounding_metadata
+                    if hasattr(gm, "grounding_chunks") and gm.grounding_chunks:
+                        for chunk in gm.grounding_chunks:
+                            if hasattr(chunk, "web") and chunk.web:
+                                t = getattr(chunk.web, "title", "") or "权威官方参考源"
+                                u = getattr(chunk.web, "uri", "")
+                                if u and u.startswith("http") and u not in [l[1] for l in grounding_links]:
+                                    grounding_links.append((t, u))
+        except Exception:
+            pass
+
+        if grounding_links:
+            header_str = "\n\n---\n**🔗 Google 官方实时检索核验来源 (点击可直接验证):**\n"
+            res_text += header_str
+            for title, uri in grounding_links[:6]:
+                res_text += f"- [{title}]({uri})\n"
+
+        return res_text
 
     elif provider_name in ["WorkBuddy (腾讯云 AI Agent)", "OpenAI (ChatGPT)", "DeepSeek (深度求索)", "OpenAI 兼容中转 / OpenRouter / 自定义 API"]:
         import openai
@@ -514,15 +558,17 @@ def build_prompts():
 - 可调用的产品部位与设计样品图库 (必须按需嵌入 Markdown 链接图文对照):
 {image_ref_urls}
 
-【最高隔离红线：100% 专属于当前产品】
+【最高隔离与防幻觉红线：100% 专属于当前产品】
 你必须且仅能针对当前启动单输入的具体产品【{product_name}】展开分析！
-1. 严禁混淆品类：严禁把其他历史产品（如地板出风口、马桶法兰等）的结构部件、竞品或痛点张冠李戴到【{product_name}】上！
-2. 所有物理结构拆解、零配件名称、VOC 差评、竞品与尺寸数据必须 100% 专属于【{product_name}】的真实物理形态与北美大零售货架实际事实。
-3. 若【产品部位图库】中的图片与当前产品【{product_name}】品类不符，严禁强行引用无关图片。
+1. 严禁混淆品类：严禁把其他历史产品的结构部件、竞品或痛点张冠李戴到【{product_name}】上！
+2. 绝对真实可信：所有数据（价格、评分、评价数、SKU编码、关键尺寸、认证标准）必须基于事实检索，尽量提供可点击 Markdown 超链接 [来源页面](URL)！严禁臆造！
+3. 若检索不到确切数据，严禁瞎编，必须明确标注【无法验证】或【未找到公开源】。
 """
     p1 = f"""{context_header}
 请严格执行《SOP V3.0》的【Stage 1: 物理架构与规格基准库】（涵盖 Node 00, 00.5, 01, 02）：
-【核心准则：全用通俗大白话 + 中英双语精准对照 + 强制部位图文对照】
+【核心准则：通俗大白话 + 中英双语精准对照 + 强制附带可验证超链接 (拒绝误导假信息)】
+- 【超链接强制核验】：给出的价格区间、评分、Item/SKU编码、测试标准，必须尽可能附带可点击的真实 Markdown 超链接 [来源页面](URL)！
+- 【实事求是】：若某项参数（如壁厚、内径）在官方页面未公开，严禁瞎编，必须明确标注【无法验证】或【未找到公开源】！
 1. 【00 & 00.5 项目章程与渠道界定】：用简单直白的大白话明确在 {channel_mode} 渠道下的业务目标与审核标准。
 2. 【01 产品基础规格拆解库】：
    - 提取目标产品的最新真实参数（价格、评分、SKU/Item编号、质保、认证），结论先行。
@@ -534,10 +580,10 @@ def build_prompts():
 """
     p2 = f"""{context_header}
 基于前期结论，请严格执行《SOP V3.0》的【Stage 2: 场景矩阵、适配性与真实 VOC 挖掘】（涵盖 Node 03, 04, 05, 05.5）：
-【核心准则：生活化场景大白话 + 中英双语真实买家原声吐槽】
+【核心准则：生活化场景大白话 + 中英双语真实买家原声吐槽 + 附带差评来源】
 1. 【03 真实四维场景矩阵】：结合所选【安装部位: {mounting_type}】与【介质: {', '.join(selected_substrates)}】，用大白话讲清当前产品【{product_name}】在日常使用中的真实工况与受力环境。
 2. 【04 适配性与安装干涉】：针对不同介质，讲透会不会松动、会不会脱落、会不会损坏载体。禁止使用 "Fits All"！
-3. 【05 真实买家 VOC 深度挖掘】：必须引用该产品真实 1~5 星英文差评原声词并附带中文通俗翻译，提炼出让买家愤怒的核心痛点。
+3. 【05 真实买家 VOC 深度挖掘】：必须引用该产品真实 1~5 星英文差评原声词并附带中文通俗翻译，尽量提供差评来源网页超链接，提炼核心痛点。
 4. 【05.5 竞品 VOC 对标分析】：对比参考竞品，讲清哪些是全行业通病，哪些是该款特有缺陷。
 """
     p3 = f"""{context_header}
@@ -552,7 +598,7 @@ def build_prompts():
     p4 = f"""{context_header}
 基于前期结论，请严格执行《SOP V3.0》的【Stage 4: 商业数据库、机会排序与下一代产品定义】（涵盖 Node 08, 09, 09.5, 10, 11, 11.5, 12, 13, 14）：
 【核心准则：地道商业与设计双语 + 方案对比 + 清晰定义下一代爆款】
-1. 【08-09 竞品与规格数据库】：多竞品横向比对表（最新价格、评分、核心卖点，关键特性中英双语）。
+1. 【08-09 竞品与规格数据库】：多竞品横向比对表（最新价格、评分、核心卖点，关键特性中英双语，附带真实竞品超链接）。
 2. 【09.5 成本结构测算】：估算 BOM 材料、模具分摊、包装与海运落地成本 (Landed Cost)。
 3. 【11-12 痛点排序与设计机会】：建立 `VOC 痛点 → 根因 → 机会 → 结构改良` 闭环。
 4. 【13-14 下一代产品定义与方案推荐】：
@@ -562,7 +608,7 @@ def build_prompts():
     p5 = f"""{context_header}
 基于全部前期调研成果，请严格执行《SOP V3.0》的【Stage 5: 验证计划、渠道专属 Listing 与 20 问终极闭环】（涵盖 Node 15, 16, 17, 18）：
 【核心准则：纯正北美电商英文 Listing + 小白一秒看懂的防买错指引】
-1. 【15 EVT / DVT / PVT 工程测试计划】：关键受力测试、环境老化测试的标准与中英对照。
+1. 【15 EVT / DVT / PVT 工程测试计划】：关键受力测试、环境老化测试的标准与中英对照（必须引用 ASTM / IBC 官方标准全称）。
 2. 【16 {channel_mode} 专属 Listing 策略】：
    - 【地道高转化英文 Title】：符合北美大零售平台搜索推荐算法的高转化词。
    - 【Native English Bullet Points】：地道 5 点卖点（英语原生文案 + 中文通俗对照）。
@@ -577,7 +623,7 @@ def build_prompts():
 请严格按照以下四大模块精炼输出：
 1. 🚦【致命缺陷红绿灯诊断表 (Fatal Flaws Red/Yellow/Green)】：
    - 提取导致退货与差评的 Top 致命死穴（用 🔴 极高风险 / 🟡 中高风险 / 🟢 建议优化 标出）。
-   - 每项必须列出：受损/缺陷部位（双语标注）、买家真实原声吐槽（中英双语）、通俗工程解决措施、明确验证标准。
+   - 每项必须列出：受损/缺陷部位（双语标注）、买家真实原声吐槽（中英双语，附带来源链接）、通俗工程解决措施、明确验证标准。
 2. 📊【核心硬性工程红线指标速查表 (Critical Specs Baseline)】：
    - 提取最核心的物理与工程硬指标，包含大白话通俗说明与公制/英制双轨数值。
 3. 🏆【产品选型与渠道落地决策 (Product Selection & GTM)】：
@@ -643,7 +689,7 @@ if run_all_btn:
                 search_query=search_queries[idx], base_url_val=custom_base_url
             )
             if idx < 5:
-                time.sleep(2.5)  # 2.5秒平滑缓冲，有效避免触发 API 频控 503/429
+                time.sleep(2.5)  # 平滑缓冲避免 503/429
         st.success(f"🎉 【{product_name}】全流程深度研究已执行完毕！")
 
 # ==============================================================================
