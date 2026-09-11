@@ -2,6 +2,7 @@ import streamlit as st
 import os
 import json
 import time
+import re
 
 # ==============================================================================
 # 1. 页面配置与主题样式
@@ -382,92 +383,100 @@ with st.sidebar:
 # ==============================================================================
 def call_single_attempt(provider_name, api_key_val, model_id, final_prompt, base_url_val=""):
     if provider_name == "Google Gemini":
-        from google import genai
-        from google.genai import types
-        client = genai.Client(api_key=api_key_val)
-        
-        # 核心防误导升级：开启 Google 官方 Search Grounding，直接抓取一手真实数据与可验证超链接
-        config_args = {
-            "system_instruction": SOP_SYSTEM_INSTRUCTION,
-            "tools": [types.Tool(google_search=types.GoogleSearch())]
-        }
-        if "pro" in model_id.lower() or "flash" in model_id.lower():
-            config_args["temperature"] = temperature
+        try:
+            from google import genai
+            from google.genai import types
+            client = genai.Client(api_key=api_key_val)
             
-        try:
-            config = types.GenerateContentConfig(**config_args)
-            response = client.models.generate_content(
-                model=model_id,
-                contents=final_prompt,
-                config=config
-            )
-        except Exception:
-            # 容错降级：若特定极少数模型不支持 tools 则退回标准调用
-            config_args.pop("tools", None)
-            config = types.GenerateContentConfig(**config_args)
-            response = client.models.generate_content(
-                model=model_id,
-                contents=final_prompt,
-                config=config
-            )
+            # 开启 Google 官方 Search Grounding，实时抓取真实数据与可验证超链接
+            config_args = {
+                "system_instruction": SOP_SYSTEM_INSTRUCTION,
+                "tools": [types.Tool(google_search=types.GoogleSearch())]
+            }
+            if "pro" in model_id.lower() or "flash" in model_id.lower():
+                config_args["temperature"] = temperature
+                
+            try:
+                config = types.GenerateContentConfig(**config_args)
+                response = client.models.generate_content(
+                    model=model_id,
+                    contents=final_prompt,
+                    config=config
+                )
+            except Exception:
+                # 容错降级：若特定模型环境不支持 tools 则退回标准调用
+                config_args.pop("tools", None)
+                config = types.GenerateContentConfig(**config_args)
+                response = client.models.generate_content(
+                    model=model_id,
+                    contents=final_prompt,
+                    config=config
+                )
 
-        res_text = response.text or ""
+            res_text = response.text or ""
 
-        # 智能提取 Google 官方检索到的真实来源超链接并挂载文末，供用户直接点击核验
-        grounding_links = []
-        try:
-            if hasattr(response, "candidates") and response.candidates:
-                candidate = response.candidates[0]
-                if hasattr(candidate, "grounding_metadata") and candidate.grounding_metadata:
-                    gm = candidate.grounding_metadata
-                    if hasattr(gm, "grounding_chunks") and gm.grounding_chunks:
-                        for chunk in gm.grounding_chunks:
-                            if hasattr(chunk, "web") and chunk.web:
-                                t = getattr(chunk.web, "title", "") or "权威官方参考源"
-                                u = getattr(chunk.web, "uri", "")
-                                if u and u.startswith("http") and u not in [l[1] for l in grounding_links]:
-                                    grounding_links.append((t, u))
-        except Exception:
-            pass
+            # 智能提取 Google 官方检索到的真实来源超链接并挂载文末，供用户核验
+            grounding_links = []
+            try:
+                if hasattr(response, "candidates") and response.candidates:
+                    candidate = response.candidates[0]
+                    if hasattr(candidate, "grounding_metadata") and candidate.grounding_metadata:
+                        gm = candidate.grounding_metadata
+                        if hasattr(gm, "grounding_chunks") and gm.grounding_chunks:
+                            for chunk in gm.grounding_chunks:
+                                if hasattr(chunk, "web") and chunk.web:
+                                    t = getattr(chunk.web, "title", "") or "权威官方参考源"
+                                    u = getattr(chunk.web, "uri", "")
+                                    if u and u.startswith("http") and u not in [l[1] for l in grounding_links]:
+                                        grounding_links.append((t, u))
+            except Exception:
+                pass
 
-        if grounding_links:
-            header_str = "\n\n---\n**🔗 Google 官方实时检索核验来源 (点击可直接验证):**\n"
-            res_text += header_str
-            for title, uri in grounding_links[:6]:
-                res_text += f"- [{title}]({uri})\n"
+            if grounding_links:
+                header_str = "\n\n---\n**🔗 Google 官方实时检索核验来源 (点击可直接验证):**\n"
+                res_text += header_str
+                for title, uri in grounding_links[:6]:
+                    res_text += f"- [{title}]({uri})\n"
 
-        return res_text
+            return res_text
+        except ImportError:
+            # 兼容老版 google-generativeai 库
+            import google.generativeai as legacy_genai
+            legacy_genai.configure(api_key=api_key_val)
+            model = legacy_genai.GenerativeModel(model_name=model_id, system_instruction=SOP_SYSTEM_INSTRUCTION)
+            res = model.generate_content(final_prompt, generation_config={"temperature": temperature})
+            return res.text
 
     elif provider_name in ["WorkBuddy (腾讯云 AI Agent)", "OpenAI (ChatGPT)", "DeepSeek (深度求索)", "OpenAI 兼容中转 / OpenRouter / 自定义 API"]:
         import openai
         if provider_name == "WorkBuddy (腾讯云 AI Agent)":
-            client = openai.OpenAI(api_key=api_key_val, base_url=base_url_val or "https://api.workbuddy.cn/v1", timeout=90.0)
+            client = openai.OpenAI(api_key=api_key_val, base_url=base_url_val or "https://api.workbuddy.cn/v1", timeout=120.0)
         elif provider_name == "DeepSeek (深度求索)":
-            client = openai.OpenAI(api_key=api_key_val, base_url="https://api.deepseek.com", timeout=90.0)
+            client = openai.OpenAI(api_key=api_key_val, base_url="https://api.deepseek.com", timeout=120.0)
         elif provider_name == "OpenAI 兼容中转 / OpenRouter / 自定义 API":
-            client = openai.OpenAI(api_key=api_key_val, base_url=base_url_val or "https://openrouter.ai/api/v1", timeout=90.0)
+            client = openai.OpenAI(api_key=api_key_val, base_url=base_url_val or "https://openrouter.ai/api/v1", timeout=120.0)
         else:
-            client = openai.OpenAI(api_key=api_key_val, timeout=90.0)
+            client = openai.OpenAI(api_key=api_key_val, timeout=120.0)
 
         is_reasoner = any(k in model_id.lower() for k in ["o1", "o3", "reasoner"])
         if is_reasoner:
             messages = [
                 {"role": "user", "content": f"【系统指导准则】\n{SOP_SYSTEM_INSTRUCTION}\n\n【当前分析任务】\n{final_prompt}"}
             ]
-            call_args = {"model": model_id, "messages": messages}
+            call_args = {"model": model_id, "messages": messages, "max_completion_tokens": 8192}
         else:
             messages = [
                 {"role": "system", "content": SOP_SYSTEM_INSTRUCTION},
                 {"role": "user", "content": final_prompt}
             ]
-            call_args = {"model": model_id, "messages": messages, "temperature": temperature}
+            call_args = {"model": model_id, "messages": messages, "temperature": temperature, "max_tokens": 8192}
 
         res = client.chat.completions.create(**call_args)
         return res.choices[0].message.content
 
     elif provider_name == "Anthropic Claude":
         import anthropic
-        client = anthropic.Anthropic(api_key=api_key_val, timeout=90.0)
+        client = anthropic.Anthropic(api_key=api_key_val, timeout=120.0)
         res = client.messages.create(
             model=model_id,
             system=SOP_SYSTEM_INSTRUCTION,
@@ -485,7 +494,7 @@ def call_single_attempt(provider_name, api_key_val, model_id, final_prompt, base
 def execute_stage(provider_name, api_key_val, model_id, stage_prompt, stage_name, search_query="", base_url_val=""):
     realtime_context = ""
     if search_query:
-        with st.spinner(f"正在实时抓取一手网络数据: {search_query[:30]} ..."):
+        with st.spinner(f"正在实时抓取一手网络数据: {search_query[:35]} ..."):
             fetched_data = live_web_search(search_query)
             if fetched_data:
                 realtime_context = f"\n\n【最新互联网实时抓取证据库】:\n{fetched_data}\n"
@@ -616,7 +625,7 @@ def build_prompts():
 3. 【17 终版产品定义书 (Final Definition)】：工程规格卡片（中英双语）。
 4. 【18 终极闭环：解答 20 个产品开发核心决策问题】：逐一精确作答 20 个核心决策问题。
 """
-    p6 = f"""{context_header}
+    p6_base = f"""{context_header}
 基于 Stage 1 至 Stage 5 的全部深度调研成果，请执行 SOP 的【压轴 Stage 6: 汇报级终极决策总结看板 (Executive Summary Dashboard)】：
 【核心目标】：严禁长篇大论！文字必须全部采用通俗易懂的大白话，关键部件与指标强制采用【中文通俗名 (北美行业地道英文 Native Term)】双语标注，把当前产品【{product_name}】的最重要部分精炼提取出来，形成一份【一页纸、精确可汇报、高管/总监一眼看透问题与决策】的高效报告看板。
 
@@ -631,10 +640,21 @@ def build_prompts():
 4. 📋【下一步立即可执行行动清单 (Action Items)】：
    - 打样验证要点、包装图文防退货整改、首单采购建议。
 """
-    return [p1, p2, p3, p4, p5, p6]
+    return [p1, p2, p3, p4, p5, p6_base]
+
+def get_dynamic_stage6_prompt(base_p6):
+    """动态提取前 5 阶段的产出成果注入 Stage 6，确保决策看板与前期调研 100% 严密闭环"""
+    accumulated_context = []
+    for i in range(1, 6):
+        res = st.session_state.get(f"stage{i}_res", "").strip()
+        if res and not res.startswith("❌"):
+            accumulated_context.append(f"=== Stage {i} 前期调研成果 ===\n{res[:1800]}")
+    if accumulated_context:
+        return f"{base_p6}\n\n【必须基于以下 Stage 1~5 已完成的前期真实调研数据进行提炼与总结看板生成】:\n" + "\n\n".join(accumulated_context)
+    return base_p6
 
 # ==============================================================================
-# 8. 执行控制栏与流水线调用
+# 8. 执行控制栏与流水线调用 (集成进度条与首步错误熔断)
 # ==============================================================================
 col_btn, col_clear, col_info = st.columns(3)
 with col_btn:
@@ -677,20 +697,41 @@ if run_all_btn:
         search_queries = [
             f"{product_name} Home Depot price specifications dimensions review",
             f"{product_name} reviews complaints problems leakage fail",
-            f"{product_name} teardown broken cracked failure",
+            f"{product_name} teardown broken cracked failure internal structure",
             f"{competitors} price rating comparison" if competitors.strip() else f"{product_name} top competitors",
             f"{product_name} installation manual test standard",
             f"{product_name} executive summary decision benchmark"
         ]
         
+        progress_bar = st.progress(0, text="🚀 正在启动全流程分析流水线...")
+        
+        has_failed = False
         for idx in range(6):
-            st.session_state[f"stage{idx+1}_res"] = execute_stage(
-                provider, api_key, model_name, prompts[idx], stage_names[idx], 
+            stage_p = prompts[idx]
+            # 若执行到 Stage 6，动态注入 Stage 1~5 的实际产出结论
+            if idx == 5:
+                stage_p = get_dynamic_stage6_prompt(prompts[5])
+                
+            progress_bar.progress(idx / 6, text=f"正在分析第 {idx+1}/6 阶段: {stage_names[idx]}...")
+            
+            res = execute_stage(
+                provider, api_key, model_name, stage_p, stage_names[idx], 
                 search_query=search_queries[idx], base_url_val=custom_base_url
             )
+            st.session_state[f"stage{idx+1}_res"] = res
+
+            # 首步错误熔断：若 Stage 1 发生致命凭证或权限错误，立即停止后续阶段
+            if idx == 0 and res.startswith("❌"):
+                has_failed = True
+                st.error("检测到第一阶段执行异常（通常为 API Key、权限或模型配置问题），已自动中止后续阶段，避免无效等待。")
+                break
+                
             if idx < 5:
-                time.sleep(2.5)  # 平滑缓冲避免 503/429
-        st.success(f"🎉 【{product_name}】全流程深度研究已执行完毕！")
+                time.sleep(2.0)  # 平滑缓冲避免 503/429
+                
+        if not has_failed:
+            progress_bar.progress(1.0, text="✅ 全部 6 个阶段分析已圆满完成！")
+            st.success(f"🎉 【{product_name}】全流程深度研究已执行完毕！")
 
 # ==============================================================================
 # 9. 多标签页呈现、单步独立重试与报告导出
@@ -713,8 +754,11 @@ if any(st.session_state[f"stage{i}_res"] for i in range(1, 7)):
             st.markdown(st.session_state[f"stage{stage_idx}_res"])
             st.markdown("---")
             if st.button(f"🔄 实时重新检索并运行此阶段 ({stage_title})", key=f"retry_{stage_idx}"):
+                cur_p = prompts[stage_idx-1]
+                if stage_idx == 6:
+                    cur_p = get_dynamic_stage6_prompt(prompts[5])
                 st.session_state[f"stage{stage_idx}_res"] = execute_stage(
-                    provider, api_key, model_name, prompts[stage_idx-1], stage_title, 
+                    provider, api_key, model_name, cur_p, stage_title, 
                     search_query=sq, base_url_val=custom_base_url
                 )
                 st.rerun()
@@ -722,7 +766,7 @@ if any(st.session_state[f"stage{i}_res"] for i in range(1, 7)):
     render_stage_tab(tab_sum, 6, "Stage 6 汇报级终极决策总结看板", f"{product_name} executive summary report")
     render_stage_tab(tab1, 1, "Stage 1 规格基准库 (通俗白话+部位图)", f"{product_name} Home Depot price specifications")
     render_stage_tab(tab2, 2, "Stage 2 场景与真实 VOC", f"{product_name} complaints problems review")
-    render_stage_tab(tab3, 3, "Stage 3 根因与结构拆解", f"{product_name} complaints problems review")
+    render_stage_tab(tab3, 3, "Stage 3 根因与结构拆解", f"{product_name} teardown broken failure internal structure")
     render_stage_tab(tab4, 4, "Stage 4 机会与下一代定义", f"{competitors} specs price" if competitors.strip() else f"{product_name} specs")
     render_stage_tab(tab5, 5, "Stage 5 验证计划与 Listing", f"{product_name} installation manual test standard")
 
@@ -762,10 +806,15 @@ if any(st.session_state[f"stage{i}_res"] for i in range(1, 7)):
 {st.session_state.stage5_res}
 """
         st.markdown(full_content)
+        
+        # 安全清洗文件名，防止斜杠/引号导致系统下载异常
+        cleaned_size = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', nominal_size.replace('/', '-').replace('"', 'in'))
+        safe_filename = f"{channel_mode.split(' ')[0]}_SOP_V3_{cleaned_size}.md"
+        
         st.download_button(
             label="📥 一键下载完整研究报告 (.md)",
             data=full_content,
-            file_name=f"{channel_mode.split(' ')[0]}_SOP_V3_{nominal_size.replace(' ', '_')}.md",
+            file_name=safe_filename,
             mime="text/markdown",
             use_container_width=True
         )
