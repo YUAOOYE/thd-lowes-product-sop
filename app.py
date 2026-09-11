@@ -27,18 +27,22 @@ st.markdown("""
     .stTabs [data-baseweb="tab-list"] { gap: 8px; }
     .stTabs [data-baseweb="tab"] { height: 45px; border-radius: 6px 6px 0px 0px; padding: 10px 16px; font-weight: 600; }
     .stage-box { background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+    .streaming-card { border-left: 4px solid #2563EB; background: #F8FAFC; padding: 12px 16px; border-radius: 4px; margin-bottom: 15px; }
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-header">🛠️ 北美建材大零售产品开发 SOP V3.0 系统</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">多模型引擎联动 (Gemini / WorkBuddy / OpenAI / Claude / DeepSeek) | 503 过载自动重试与智能切模 | 真实网络证据闭环 | 结构拆解与制造工艺</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">多模型引擎联动 | 自由阶段选跑 | 实时打字机流式输出 (Streaming) | 智能容错与高可用切模</div>', unsafe_allow_html=True)
 
-def render_safe_markdown(text: str):
+def clean_latex_dollars(text: str) -> str:
     """防止电商价格 $ 符号被误识别为 KaTeX 数学公式导致排版变形"""
     if not text:
-        return
-    safe_text = re.sub(r'(?<!\\)\$(\d)', r'\\$\1', text)
-    st.markdown(safe_text, unsafe_allow_html=True)
+        return ""
+    return re.sub(r'(?<!\\)\$(\d)', r'\\$\1', text)
+
+def render_safe_markdown(text: str):
+    """安全渲染 Markdown"""
+    st.markdown(clean_latex_dollars(text), unsafe_allow_html=True)
 
 # ==============================================================================
 # 2. SOP V3.0 核心系统提示词
@@ -82,7 +86,7 @@ SOP_SYSTEM_INSTRUCTION = """
 """
 
 # ==============================================================================
-# 3. 模型配置映射字典 (首选 gemini-2.0-flash: 算力最充裕，极低 503 概率)
+# 3. 供应商最新模型映射与备用池
 # ==============================================================================
 PROVIDER_MODELS = {
     "Google Gemini": [
@@ -134,7 +138,6 @@ FALLBACK_MODELS = {
 }
 
 def is_transient_error(err_str):
-    """判断是否为 Google / OpenAI 服务器临时负载波动"""
     transient_keywords = [
         "503", "overload", "unavailable", "server is busy", "502", "504", 
         "rate limit", "temporarily", "429", "resource_exhausted", "capacity", 
@@ -161,70 +164,75 @@ def live_web_search(query, max_results=3):
         return ""
 
 # ==============================================================================
-# 4. 底层接口与辅助函数定义
+# 4. 底层流式与单次调用引擎 (Streaming Generator)
 # ==============================================================================
-def call_single_attempt(provider_name, api_key_val, model_id, final_prompt, base_url_val="", temp_val=0.1, system_inst=SOP_SYSTEM_INSTRUCTION, enable_search=True):
-    """底层通用单次模型请求"""
+def stream_single_attempt(provider_name, api_key_val, model_id, final_prompt, base_url_val="", temp_val=0.1, system_inst=SOP_SYSTEM_INSTRUCTION, enable_search=True):
+    """
+    底层流式生成器函数 (逐个 chunk 实时 yield 内容)
+    """
     if provider_name == "Google Gemini":
         try:
             from google import genai
             from google.genai import types
             client = genai.Client(api_key=api_key_val)
             
-            config_args = {
-                "temperature": temp_val
-            }
+            config_args = {"temperature": temp_val}
             if system_inst:
                 config_args["system_instruction"] = system_inst
             if enable_search:
                 config_args["tools"] = [types.Tool(google_search=types.GoogleSearch())]
                 
+            config = types.GenerateContentConfig(**config_args)
+            grounding_links = []
+            
             try:
-                config = types.GenerateContentConfig(**config_args)
-                response = client.models.generate_content(
+                response_stream = client.models.generate_content_stream(
                     model=model_id,
                     contents=final_prompt,
                     config=config
                 )
+                for chunk in response_stream:
+                    if hasattr(chunk, "candidates") and chunk.candidates:
+                        cand = chunk.candidates[0]
+                        if hasattr(cand, "grounding_metadata") and cand.grounding_metadata:
+                            gm = cand.grounding_metadata
+                            if hasattr(gm, "grounding_chunks") and gm.grounding_chunks:
+                                for gc in gm.grounding_chunks:
+                                    if hasattr(gc, "web") and gc.web:
+                                        t = getattr(gc.web, "title", "") or "权威官方参考源"
+                                        u = getattr(gc.web, "uri", "")
+                                        if u and u.startswith("http") and u not in [l[1] for l in grounding_links]:
+                                            grounding_links.append((t, u))
+                    if chunk.text:
+                        yield chunk.text
             except Exception:
-                # 容错降级：移除 tools 再次尝试
+                # 若带 tools 发生异常，降级为无 tools 流式
                 config_args.pop("tools", None)
                 config = types.GenerateContentConfig(**config_args)
-                response = client.models.generate_content(
+                response_stream = client.models.generate_content_stream(
                     model=model_id,
                     contents=final_prompt,
                     config=config
                 )
-
-            res_text = response.text or ""
-            grounding_links = []
-            try:
-                if hasattr(response, "candidates") and response.candidates:
-                    candidate = response.candidates[0]
-                    if hasattr(candidate, "grounding_metadata") and candidate.grounding_metadata:
-                        gm = candidate.grounding_metadata
-                        if hasattr(gm, "grounding_chunks") and gm.grounding_chunks:
-                            for chunk in gm.grounding_chunks:
-                                if hasattr(chunk, "web") and chunk.web:
-                                    t = getattr(chunk.web, "title", "") or "权威官方参考源"
-                                    u = getattr(chunk.web, "uri", "")
-                                    if u and u.startswith("http") and u not in [l[1] for l in grounding_links]:
-                                        grounding_links.append((t, u))
-            except Exception:
-                pass
+                for chunk in response_stream:
+                    if chunk.text:
+                        yield chunk.text
 
             if grounding_links:
-                res_text += "\n\n---\n**🔗 Google 官方实时检索核验来源 (点击可直接验证):**\n"
-                for title, uri in grounding_links[:6]:
-                    res_text += f"- [{title}]({uri})\n"
-
-            return res_text
+                foot = "\n\n---\n**🔗 Google 官方实时检索核验来源 (点击可直接验证):**\n"
+                for t, u in grounding_links[:6]:
+                    foot += f"- [{t}]({u})\n"
+                yield foot
+            return
         except ImportError:
             import google.generativeai as legacy_genai
             legacy_genai.configure(api_key=api_key_val)
             model = legacy_genai.GenerativeModel(model_name=model_id, system_instruction=system_inst)
-            res = model.generate_content(final_prompt, generation_config={"temperature": temp_val})
-            return res.text
+            res = model.generate_content(final_prompt, generation_config={"temperature": temp_val}, stream=True)
+            for chunk in res:
+                if chunk.text:
+                    yield chunk.text
+            return
 
     elif provider_name in ["WorkBuddy (腾讯云 AI Agent)", "OpenAI (ChatGPT)", "DeepSeek (深度求索)", "OpenAI 兼容中转 / OpenRouter / 自定义 API"]:
         import openai
@@ -241,37 +249,39 @@ def call_single_attempt(provider_name, api_key_val, model_id, final_prompt, base
         is_openai_official_reasoner = ("o1" in model_id.lower() or "o3" in model_id.lower()) and (provider_name == "OpenAI (ChatGPT)")
 
         if is_reasoner:
-            messages = [
-                {"role": "user", "content": f"【系统指导准则】\n{system_inst}\n\n【当前分析任务】\n{final_prompt}"}
-            ]
+            messages = [{"role": "user", "content": f"【系统指导准则】\n{system_inst}\n\n【当前分析任务】\n{final_prompt}"}]
             token_key = "max_completion_tokens" if is_openai_official_reasoner else "max_tokens"
-            call_args = {"model": model_id, "messages": messages, token_key: 8192}
+            call_args = {"model": model_id, "messages": messages, token_key: 8192, "stream": True}
         else:
-            messages = [
-                {"role": "system", "content": system_inst},
-                {"role": "user", "content": final_prompt}
-            ]
-            call_args = {"model": model_id, "messages": messages, "temperature": temp_val, "max_tokens": 8192}
+            messages = [{"role": "system", "content": system_inst}, {"role": "user", "content": final_prompt}]
+            call_args = {"model": model_id, "messages": messages, "temperature": temp_val, "max_tokens": 8192, "stream": True}
 
-        res = client.chat.completions.create(**call_args)
-        return res.choices[0].message.content
+        response = client.chat.completions.create(**call_args)
+        for chunk in response:
+            if chunk.choices and chunk.choices[0].delta:
+                delta = chunk.choices[0].delta
+                if hasattr(delta, "content") and delta.content:
+                    yield delta.content
+        return
 
     elif provider_name == "Anthropic Claude":
         import anthropic
         client = anthropic.Anthropic(api_key=api_key_val, timeout=120.0)
-        res = client.messages.create(
+        with client.messages.stream(
             model=model_id,
             system=system_inst,
             max_tokens=8192,
             temperature=temp_val,
             messages=[{"role": "user", "content": final_prompt}]
-        )
-        return res.content[0].text
+        ) as stream:
+            for text in stream.text_stream:
+                yield text
+        return
     else:
         raise ValueError(f"未受支持的供应商: {provider_name}")
 
 def parse_url_to_launchpad(quick_input, provider_name, api_key_val, model_id, base_url_val=""):
-    """输入产品链接或品名/SKU，带高可用容错与备选模型自动切换"""
+    """预填提取：使用轻量级直接响应，结合自动容错"""
     search_query = f"{quick_input} product specifications dimensions materials price home depot lowes"
     fetched_web = live_web_search(search_query, max_results=3)
     
@@ -282,15 +292,15 @@ def parse_url_to_launchpad(quick_input, provider_name, api_key_val, model_id, ba
 【参考联网检索信息】：
 {fetched_web}
 
-请严格按下列格式输出合法的纯 JSON 字典，切勿包含代码块标记外的任何多余文字：
+请严格输出纯 JSON 字典，不得夹带任何额外说明：
 {{
-  "channel": "严格从列表匹配一个：['The Home Depot (THD)', 'Lowe\\'s', 'Dual-Channel (THD + Lowe\\'s 跨渠道对标)']",
+  "channel": "从列表匹配一个：['The Home Depot (THD)', 'Lowe\\'s', 'Dual-Channel (THD + Lowe\\'s 跨渠道对标)']",
   "product_name": "完整品名，中英双语",
   "product_url": "{quick_input}",
   "nominal_size": "标称安装开孔/尺寸基准 (含英制与公制)",
   "material_and_finish": "真实材质与表面工艺",
   "load_and_safety": "行业承重与安全规范",
-  "mounting_type": "安装部位，严格从列表匹配一个：['厨卫/橱柜/台面/管道 (Kitchen, Bath & Plumbing)', '地面安装 (Floor)', '墙面/天花板安装 (Wall & Ceiling)', '门窗/出入口五金 (Doors & Hardware)', '户外/甲板/庭院 (Outdoor & Deck)', '独立放置/免安装 (Freestanding/Portable)']",
+  "mounting_type": "安装部位，从列表匹配一个：['厨卫/橱柜/台面/管道 (Kitchen, Bath & Plumbing)', '地面安装 (Floor)', '墙面/天花板安装 (Wall & Ceiling)', '门窗/出入口五金 (Doors & Hardware)', '户外/甲板/庭院 (Outdoor & Deck)', '独立放置/免安装 (Freestanding/Portable)']",
   "target_persona": "目标客群，从列表匹配一个：['全客群通用 (DIY房主 + PRO承包商双轮驱动)', '聚焦 DIY 个人房主 (极简安装与防呆)', '聚焦 PRO 专业施工承包商 (快速作业与耐操耐久)']",
   "packaging_type": "零售包装形态，从列表匹配一个：['热缩膜带展示卡 (Shrink Wrap w/ Header Card) - 经济畅销型', '双面高透吸塑泡壳 (Clamshell Blister Pack) - 防盗抗撕挂钩型', '独立开窗瓦楞彩盒 (Corrugated Box w/ Window) - 高端防摔防护型', '工程批发大包装 (Contractor Bulk Pack) - 工地大宗出货型']",
   "included_accessories": "随附配件与紧固件",
@@ -299,7 +309,6 @@ def parse_url_to_launchpad(quick_input, provider_name, api_key_val, model_id, ba
   "focus_points": "买家最痛的 3 大真实差评吐槽与新人避坑重点"
 }}
 """
-    # 建立候选模型池，防止主模型 503 导致失败
     candidate_models = [model_id]
     if provider_name in FALLBACK_MODELS:
         for fb in FALLBACK_MODELS[provider_name]:
@@ -310,8 +319,8 @@ def parse_url_to_launchpad(quick_input, provider_name, api_key_val, model_id, ba
     for current_model in candidate_models[:3]:
         for attempt in range(1, 3):
             try:
-                # 预填使用轻量指令，且禁用二次 Google Tools，极大降低 500/503 几率
-                raw_res = call_single_attempt(
+                collected = []
+                for chunk in stream_single_attempt(
                     provider_name=provider_name,
                     api_key_val=api_key_val,
                     model_id=current_model,
@@ -320,12 +329,13 @@ def parse_url_to_launchpad(quick_input, provider_name, api_key_val, model_id, ba
                     temp_val=0.1,
                     system_inst="You are a professional product spec extractor. Output valid JSON only.",
                     enable_search=False
-                )
+                ):
+                    collected.append(chunk)
+                raw_res = "".join(collected)
                 if raw_res:
                     break
             except Exception as e:
-                err_str = str(e)
-                if is_model_not_found_error(err_str):
+                if is_model_not_found_error(str(e)):
                     break
                 time.sleep(attempt * 1.5)
         if raw_res:
@@ -343,25 +353,28 @@ def parse_url_to_launchpad(quick_input, provider_name, api_key_val, model_id, ba
     return None
 
 def get_accumulated_context(current_stage_idx: int) -> str:
-    """提取当前阶段之前所有阶段的结论精华，实现流水线滚动记忆闭环"""
+    """滚动上下文记忆：即使跳阶段执行，只要前序阶段跑过，就会自动无缝注入"""
     if current_stage_idx == 1:
         return ""
     summary_parts = []
     for i in range(1, current_stage_idx):
         res = st.session_state.get(f"stage{i}_res", "").strip()
         if res and not res.startswith("❌"):
-            summary_parts.append(f"=== 【前序 Stage {i} 已锁定的调研结论】 ===\n{res[:1500]}")
+            summary_parts.append(f"=== 【前序 Stage {i} 已锁定的调研结论】 ===\n{res[:1400]}")
     if summary_parts:
         return "\n\n【核心上下文记忆库（必须基于以下前序已锁定事实演进，严禁前后矛盾）】:\n" + "\n\n".join(summary_parts)
     return ""
 
-def execute_stage(provider_name, api_key_val, model_id, stage_prompt, stage_name, search_query="", base_url_val="", temp_val=0.1, extra_data=""):
+def execute_stage_with_stream(provider_name, api_key_val, model_id, stage_prompt, stage_name, target_placeholder, search_query="", base_url_val="", temp_val=0.1, extra_data="", use_stream=True):
+    """
+    高阶执行器：结合实时流式打字渲染、备选模型秒切与退避重试
+    """
     realtime_context = ""
     if search_query:
-        with st.spinner(f"正在实时抓取一手网络数据: {search_query[:35]} ..."):
-            fetched_data = live_web_search(search_query)
-            if fetched_data:
-                realtime_context = f"\n\n【最新互联网实时抓取证据库】:\n{fetched_data}\n"
+        target_placeholder.markdown(f"*{stage_name}：正在全网检索最新客观数据...*")
+        fetched_data = live_web_search(search_query)
+        if fetched_data:
+            realtime_context = f"\n\n【最新互联网实时抓取证据库】:\n{fetched_data}\n"
     
     if extra_data.strip():
         realtime_context += f"\n\n【用户补充事实库】:\n{extra_data.strip()}\n"
@@ -375,44 +388,45 @@ def execute_stage(provider_name, api_key_val, model_id, stage_prompt, stage_name
                 candidate_models.append(fb)
 
     last_err = ""
-    status_bar = st.empty()
-    
     for current_model in candidate_models[:3]:
         for attempt in range(1, 3):
-            with st.spinner(f"⚡ 正在执行: {stage_name} (模型: `{current_model}`)..."):
-                try:
-                    result = call_single_attempt(
-                        provider_name=provider_name,
-                        api_key_val=api_key_val,
-                        model_id=current_model,
-                        final_prompt=final_prompt,
-                        base_url_val=base_url_val,
-                        temp_val=temp_val,
-                        system_inst=SOP_SYSTEM_INSTRUCTION,
-                        enable_search=True
-                    )
-                    status_bar.empty()
-                    if current_model != model_id:
-                        st.caption(f"💡 注：主模型遇波峰，此阶段已通过备用模型 `{current_model}` 成功生成。")
-                    return result
-                except Exception as e:
-                    last_err = str(e)
-                    if is_model_not_found_error(last_err):
-                        status_bar.info(f"🔄 模型 `{current_model}` 不可用，自动切至下一备选...")
-                        break
-                    elif is_transient_error(last_err):
-                        wait_sec = attempt * 3
-                        status_bar.info(f"⏳ `{current_model}` 流量高峰 (ServerError)，退避重试 ({attempt}/2，等待 {wait_sec}s)...")
-                        time.sleep(wait_sec)
-                    else:
-                        status_bar.empty()
-                        return f"❌ 阶段执行遇到异常: {last_err}"
+            target_placeholder.markdown(f"*{stage_name}：正在驱动模型 `{current_model}` 深度分析中...*")
+            try:
+                full_text = ""
+                generator = stream_single_attempt(
+                    provider_name=provider_name,
+                    api_key_val=api_key_val,
+                    model_id=current_model,
+                    final_prompt=final_prompt,
+                    base_url_val=base_url_val,
+                    temp_val=temp_val,
+                    system_inst=SOP_SYSTEM_INSTRUCTION,
+                    enable_search=True
+                )
+                
+                # 流式逐字更新
+                for chunk in generator:
+                    full_text += chunk
+                    if use_stream:
+                        target_placeholder.markdown(clean_latex_dollars(full_text) + " ▌", unsafe_allow_html=True)
+                        
+                target_placeholder.markdown(clean_latex_dollars(full_text), unsafe_allow_html=True)
+                return full_text
+            except Exception as e:
+                last_err = str(e)
+                if is_model_not_found_error(last_err):
+                    break
+                elif is_transient_error(last_err):
+                    wait_sec = attempt * 3
+                    target_placeholder.warning(f"⚠️ `{current_model}` 流量高峰，正在自动退避重试 ({attempt}/2，等待 {wait_sec}s)...")
+                    time.sleep(wait_sec)
+                else:
+                    return f"❌ 阶段执行遇到异常: {last_err}"
         
-        status_bar.info(f"🔄 模型 `{current_model}` 繁忙，自动切至备用模型...")
+        target_placeholder.info(f"🔄 模型 `{current_model}` 较繁忙，正在无缝切换备选模型...")
         time.sleep(1.0)
 
-    status_bar.empty()
-    return f"❌ 阶段执行失败：模型服务繁忙 (ServerError)，请在下方点击【🔄 重新运行】重试。\n错误原因: {last_err}"
+    return f"❌ 阶段执行失败：模型服务繁忙 (ServerError)，请在下方单步重新运行重试。\n错误原因: {last_err}"
 
 def save_project_to_disk(prod_name, ch_mode):
     if not prod_name:
@@ -564,7 +578,7 @@ with st.sidebar:
                         else:
                             st.warning("⚠️ 官方接口当前负载偏高 (ServerError)，未完成自动提取。请您直接在下方输入框手动填写。")
                 except Exception as err:
-                    st.warning(f"⚠️ 智能解析遇到服务器临时波动，已为您保留输入框，请直接在下方手动输入。")
+                    st.warning("⚠️ 智能解析遇到服务器临时波动，已为您保留输入框，请直接在下方手动输入。")
 
     with st.expander("💡 快速填入示例产品模板 (可选)"):
         col_t1, col_t2 = st.columns(2)
@@ -681,7 +695,7 @@ with st.sidebar:
     extra_live_data = st.text_area("💡 实时数据补充仓 (选填)", value="", placeholder="可粘贴商品参数卡片、买家评论文本，系统将强制作为事实基准")
 
 # ==============================================================================
-# 6. 提示词构建器
+# 6. 提示词库构建
 # ==============================================================================
 def build_prompts():
     context_header = f"""
@@ -764,85 +778,137 @@ def build_prompts():
 """
     return [p1, p2, p3, p4, p5, p6_base]
 
+# 阶段信息定义
+STAGE_NAMES = {
+    1: "Stage 1 物理架构与规格库 (通俗白话+部位图)",
+    2: "Stage 2 场景适配与 VOC 挖掘 (生活大白话)",
+    3: "Stage 3 根因归因与结构制造 (图文拆解)",
+    4: "Stage 4 机会矩阵与下一代定义 (样品对比)",
+    5: "Stage 5 验证计划与 Listing (防买错指南)",
+    6: "Stage 6 汇报级终极决策总结看板 (一页纸决策)"
+}
+
+SEARCH_QUERIES = {
+    1: f"{product_name} Home Depot price specifications dimensions review",
+    2: f"{product_name} reviews complaints problems leakage fail",
+    3: f"{product_name} teardown broken cracked failure internal structure",
+    4: f"{competitors} price rating comparison" if competitors.strip() else f"{product_name} top competitors",
+    5: f"{product_name} installation manual test standard",
+    6: f"{product_name} executive summary decision benchmark"
+}
+
 # ==============================================================================
-# 7. 执行控制栏与流水线
+# 7. 阶段选择控制面板与流式执行控制
 # ==============================================================================
-col_btn, col_clear, col_info = st.columns(3)
-with col_btn:
-    run_all_btn = st.button("🚀 启动 SOP V3.0 全流程分析 (实时准确模式)", type="primary", use_container_width=True)
-with col_clear:
-    if st.button("🧹 清空当前数据 (换新产品)", use_container_width=True):
+st.markdown("### 🎯 生成控制与流式分析工作台")
+
+with st.expander("🛠️ 展开/收起：阶段选择与流式设置", expanded=True):
+    col_ctrl1, col_ctrl2 = st.columns((3, 1))
+    with col_ctrl1:
+        # 阶段选择框
+        default_stages = st.session_state.get("selected_stages_state", [1, 2, 3, 4, 5, 6])
+        selected_stages = st.multiselect(
+            "勾选需要运行的阶段（支持任意单选或多选组合）:",
+            options=[1, 2, 3, 4, 5, 6],
+            default=default_stages,
+            format_func=lambda x: STAGE_NAMES[x]
+        )
+        st.session_state["selected_stages_state"] = selected_stages
+    with col_ctrl2:
+        enable_stream = st.toggle("⚡ 开启打字机流式输出 (Streaming)", value=True, help="实时逐字显示分析生成过程，避免盲等")
+
+    col_btn_all, col_btn_core, col_btn_clear_sel = st.columns(3)
+    with col_btn_all:
+        if st.button("全选 1~6 阶段", use_container_width=True):
+            st.session_state["selected_stages_state"] = [1, 2, 3, 4, 5, 6]
+            st.rerun()
+    with col_btn_core:
+        if st.button("仅选核心决策 (Stage 1 + 6)", use_container_width=True):
+            st.session_state["selected_stages_state"] = [1, 6]
+            st.rerun()
+    with col_btn_clear_sel:
+        if st.button("反选 / 清空勾选", use_container_width=True):
+            st.session_state["selected_stages_state"] = []
+            st.rerun()
+
+col_run_btn, col_clear_btn, col_tip = st.columns((2, 1, 2))
+with col_run_btn:
+    run_selected_btn = st.button(
+        f"🚀 启动所选阶段分析 ({len(selected_stages)} 个阶段)", 
+        type="primary", 
+        use_container_width=True,
+        disabled=len(selected_stages) == 0
+    )
+with col_clear_btn:
+    if st.button("🧹 清空所有旧数据", use_container_width=True):
         for i in range(1, 7):
             st.session_state[f"stage{i}_res"] = ""
         st.session_state["analyzed_product_name"] = ""
-        st.success("已清空历史数据！")
+        st.success("已清空！")
         st.rerun()
-with col_info:
+with col_tip:
     if not api_key:
-        st.info(f"💡 请先在左侧填入 {provider.split(' ')[0]} API Key 即可启动。")
+        st.warning(f"👈 请先在左侧填入 {provider.split(' ')[0]} API Key")
 
-if run_all_btn:
+# 实时流式运行主循环
+if run_selected_btn:
     if not api_key:
         st.error(f"启动失败：缺少 {provider.split(' ')[0]} API Key，请在左侧侧边栏填入。")
     elif not product_name.strip() or not nominal_size.strip() or not product_url.strip():
         st.error("启动失败：请填写所有标红【* (必填)】项（目标品名、尺寸基准、产品链接）。")
     else:
-        for i in range(1, 7):
-            st.session_state[f"stage{i}_res"] = ""
         st.session_state["analyzed_product_name"] = product_name
-        
         prompts = build_prompts()
-        stage_names = [
-            "Stage 1 物理架构与规格库 (通俗白话+部位图)",
-            "Stage 2 场景适配与 VOC 挖掘 (生活大白话)",
-            "Stage 3 根因归因与结构制造 (图文拆解)",
-            "Stage 4 机会矩阵与下一代定义 (样品对比)",
-            "Stage 5 验证计划与 Listing (防买错指南)",
-            "Stage 6 汇报级终极决策总结看板 (一页纸决策)"
-        ]
-        search_queries = [
-            f"{product_name} Home Depot price specifications dimensions review",
-            f"{product_name} reviews complaints problems leakage fail",
-            f"{product_name} teardown broken cracked failure internal structure",
-            f"{competitors} price rating comparison" if competitors.strip() else f"{product_name} top competitors",
-            f"{product_name} installation manual test standard",
-            f"{product_name} executive summary decision benchmark"
-        ]
         
-        progress_bar = st.progress(0, text="🚀 正在启动全流程流水线...")
-        has_failed = False
+        st.markdown("---")
+        st.markdown("#### 📡 实时流式分析工作视窗")
+        stream_container = st.container()
         
-        for idx in range(6):
-            stage_idx = idx + 1
-            accumulated_memory = get_accumulated_context(stage_idx)
-            current_stage_prompt = prompts[idx] + accumulated_memory
+        total_steps = len(selected_stages)
+        progress_bar = st.progress(0, text="🚀 正在初始化流水线...")
+        
+        for idx, stage_idx in enumerate(sorted(selected_stages)):
+            stage_name = STAGE_NAMES[stage_idx]
+            progress_bar.progress(idx / total_steps, text=f"[{idx+1}/{total_steps}] 正在执行: {stage_name}...")
             
-            progress_bar.progress(idx / 6, text=f"正在分析第 {stage_idx}/6 阶段: {stage_names[idx]}...")
-            
-            res = execute_stage(
-                provider, api_key, model_name, current_stage_prompt, stage_names[idx], 
-                search_query=search_queries[idx], base_url_val=custom_base_url,
-                temp_val=temperature, extra_data=extra_live_data
-            )
-            st.session_state[f"stage{stage_idx}_res"] = res
-
-            if idx == 0 and res.startswith("❌"):
-                has_failed = True
-                st.error("第一阶段调用异常（API Key 或模型不可用），已自动熔断。")
-                break
+            with stream_container:
+                st.markdown(f'<div class="streaming-card"><b>📌 正在生成: {stage_name}</b></div>', unsafe_allow_html=True)
+                live_placeholder = st.empty()
                 
-            if idx < 5:
-                time.sleep(1.5)
+                accumulated_memory = get_accumulated_context(stage_idx)
+                current_prompt = prompts[stage_idx - 1] + accumulated_memory
                 
-        if not has_failed:
-            progress_bar.progress(1.0, text="✅ 全部 6 个阶段分析圆满完成！")
-            save_project_to_disk(product_name, channel_mode)
-            st.success(f"🎉 【{product_name}】分析报告已生成并自动保存至本地记录库！")
+                res = execute_stage_with_stream(
+                    provider_name=provider,
+                    api_key_val=api_key,
+                    model_id=model_name,
+                    stage_prompt=current_prompt,
+                    stage_name=stage_name,
+                    target_placeholder=live_placeholder,
+                    search_query=SEARCH_QUERIES[stage_idx],
+                    base_url_val=custom_base_url,
+                    temp_val=temperature,
+                    extra_data=extra_live_data,
+                    use_stream=enable_stream
+                )
+                st.session_state[f"stage{stage_idx}_res"] = res
+                
+                # 若第一阶段执行异常熔断后续
+                if idx == 0 and res.startswith("❌"):
+                    st.error("阶段调用异常，已自动停止后续执行。")
+                    break
+                    
+                time.sleep(1.0)
+                
+        progress_bar.progress(1.0, text="✅ 所选阶段分析已全部圆满完成！")
+        save_project_to_disk(product_name, channel_mode)
+        st.success(f"🎉 所选的 {total_steps} 个阶段已生成完成！已自动存档至本地，可在下方标签页或导出区查阅。")
 
 # ==============================================================================
-# 8. 成果展示与报告导出
+# 8. 成果展示、单步独立流式重试与报告导出
 # ==============================================================================
 if any(st.session_state[f"stage{i}_res"] for i in range(1, 7)):
+    st.markdown("---")
     tab_sum, tab1, tab2, tab3, tab4, tab5, tab_full = st.tabs([
         "📊 Stage 6: 汇报级总结看板",
         "📐 Stage 1: 规格基准库",
@@ -857,25 +923,42 @@ if any(st.session_state[f"stage{i}_res"] for i in range(1, 7)):
     
     def render_stage_tab(tab, stage_idx, stage_title, sq):
         with tab:
-            render_safe_markdown(st.session_state[f"stage{stage_idx}_res"])
+            current_content = st.session_state.get(f"stage{stage_idx}_res", "")
+            if not current_content:
+                st.info(f"💡 此阶段尚未生成。您可以勾选此阶段并点击上方运行，或点击下方按钮立即单独流式生成。")
+            
+            tab_placeholder = st.empty()
+            if current_content:
+                tab_placeholder.markdown(clean_latex_dollars(current_content), unsafe_allow_html=True)
+                
             st.markdown("---")
-            if st.button(f"🔄 重新检索并单步重跑 ({stage_title})", key=f"retry_{stage_idx}"):
+            if st.button(f"⚡ 单独重新运行此阶段 ({stage_title})", key=f"retry_{stage_idx}"):
                 accumulated_memory = get_accumulated_context(stage_idx)
-                cur_p = prompts[stage_idx-1] + accumulated_memory
-                st.session_state[f"stage{stage_idx}_res"] = execute_stage(
-                    provider, api_key, model_name, cur_p, stage_title, 
-                    search_query=sq, base_url_val=custom_base_url,
-                    temp_val=temperature, extra_data=extra_live_data
+                cur_p = prompts[stage_idx - 1] + accumulated_memory
+                
+                res = execute_stage_with_stream(
+                    provider_name=provider,
+                    api_key_val=api_key,
+                    model_id=model_name,
+                    stage_prompt=cur_p,
+                    stage_name=stage_title,
+                    target_placeholder=tab_placeholder,
+                    search_query=sq,
+                    base_url_val=custom_base_url,
+                    temp_val=temperature,
+                    extra_data=extra_live_data,
+                    use_stream=True
                 )
+                st.session_state[f"stage{stage_idx}_res"] = res
                 save_project_to_disk(product_name, channel_mode)
                 st.rerun()
 
-    render_stage_tab(tab_sum, 6, "Stage 6 总结看板", f"{product_name} executive summary report")
-    render_stage_tab(tab1, 1, "Stage 1 规格基准库", f"{product_name} Home Depot price specifications")
-    render_stage_tab(tab2, 2, "Stage 2 场景与 VOC", f"{product_name} complaints problems review")
-    render_stage_tab(tab3, 3, "Stage 3 根因结构拆解", f"{product_name} teardown broken failure")
-    render_stage_tab(tab4, 4, "Stage 4 机会与定义", f"{competitors} specs price" if competitors.strip() else f"{product_name} specs")
-    render_stage_tab(tab5, 5, "Stage 5 验证与 Listing", f"{product_name} installation manual test")
+    render_stage_tab(tab_sum, 6, "Stage 6 总结看板", SEARCH_QUERIES[6])
+    render_stage_tab(tab1, 1, "Stage 1 规格基准库", SEARCH_QUERIES[1])
+    render_stage_tab(tab2, 2, "Stage 2 场景与 VOC", SEARCH_QUERIES[2])
+    render_stage_tab(tab3, 3, "Stage 3 根因结构拆解", SEARCH_QUERIES[3])
+    render_stage_tab(tab4, 4, "Stage 4 机会与定义", SEARCH_QUERIES[4])
+    render_stage_tab(tab5, 5, "Stage 5 验证与 Listing", SEARCH_QUERIES[5])
 
     with tab_full:
         full_markdown = f"""# {product_name} - 北美大零售产品开发深度调研报告 (SOP V3.0)
@@ -884,28 +967,28 @@ if any(st.session_state[f"stage{i}_res"] for i in range(1, 7)):
 
 ---
 # 📊 【高管汇报级一页纸决策看板 (Executive Summary Dashboard)】
-{st.session_state.stage6_res}
+{st.session_state.stage6_res if st.session_state.stage6_res else "*(该阶段未生成)*"}
 
 ---
 # 📚 深度调研详版报告
 ## 【Stage 1: 物理架构与规格基准库】
-{st.session_state.stage1_res}
+{st.session_state.stage1_res if st.session_state.stage1_res else "*(该阶段未生成)*"}
 
 ---
 ## 【Stage 2: 场景矩阵、适配性与真实 VOC 挖掘】
-{st.session_state.stage2_res}
+{st.session_state.stage2_res if st.session_state.stage2_res else "*(该阶段未生成)*"}
 
 ---
 ## 【Stage 3: 根因归因、结构拆解与制造工艺】
-{st.session_state.stage3_res}
+{st.session_state.stage3_res if st.session_state.stage3_res else "*(该阶段未生成)*"}
 
 ---
 ## 【Stage 4: 商业数据库、机会排序与下一代产品定义】
-{st.session_state.stage4_res}
+{st.session_state.stage4_res if st.session_state.stage4_res else "*(该阶段未生成)*"}
 
 ---
 ## 【Stage 5: 验证计划、渠道专属 Listing 与 20 问终极闭环】
-{st.session_state.stage5_res}
+{st.session_state.stage5_res if st.session_state.stage5_res else "*(该阶段未生成)*"}
 """
         render_safe_markdown(full_markdown)
         
@@ -941,7 +1024,7 @@ if any(st.session_state[f"stage{i}_res"] for i in range(1, 7)):
 <div style="background-color: #EFF6FF; border: 1px solid #BFDBFE; padding: 16px; border-radius: 8px; margin-bottom: 24px;">
     <h3 style="margin-top:0;">📋 项目基本信息</h3>
     <p><b>产品名称:</b> {product_name} | <b>目标渠道:</b> {channel_mode} | <b>标称尺寸:</b> {nominal_size}</p>
-    <p><b>生成日期:</b> {time.strftime('%Y-%m-%d %H:%M:%S')} (在浏览器按 Ctrl+P 可直接存为高清 PDF)</p>
+    <p><b>生成日期:</b> {time.strftime('%Y-%m-%d %H:%M:%S')} (在浏览器按 Ctrl+P 可直接转存为高清 PDF 报告)</p>
 </div>
 <pre style="white-space: pre-wrap; font-family: inherit;">
 {full_markdown}
