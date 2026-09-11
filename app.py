@@ -37,7 +37,6 @@ def render_safe_markdown(text: str):
     """防止电商价格 $ 符号被误识别为 KaTeX 数学公式导致排版变形"""
     if not text:
         return
-    # 将后接数字且未转义的 $ 替换为 \$
     safe_text = re.sub(r'(?<!\\)\$(\d)', r'\\$\1', text)
     st.markdown(safe_text, unsafe_allow_html=True)
 
@@ -83,13 +82,13 @@ SOP_SYSTEM_INSTRUCTION = """
 """
 
 # ==============================================================================
-# 3. 模型配置映射字典
+# 3. 模型配置映射字典 (首选 gemini-2.0-flash: 算力最充裕，极低 503 概率)
 # ==============================================================================
 PROVIDER_MODELS = {
     "Google Gemini": [
-        "gemini-2.5-flash (2026官方高智能极速版)",
-        "gemini-2.0-flash (经典高稳定极速版: 算力池大，推荐)",
+        "gemini-2.0-flash (经典高稳定极速版: 算力池大，推荐首选)",
         "gemini-1.5-flash (长效高并发主力: 极少过载)",
+        "gemini-2.5-flash (2026官方高智能极速版)",
         "gemini-2.5-pro (前沿深度推理旗舰)",
         "gemini-1.5-pro (长上下文与深度逻辑旗舰)",
         "gemini-flash-latest (动态指向最新稳定版)"
@@ -135,12 +134,17 @@ FALLBACK_MODELS = {
 }
 
 def is_transient_error(err_str):
-    transient_keywords = ["503", "overload", "unavailable", "server is busy", "502", "504", "rate limit", "temporarily", "429", "resource_exhausted", "capacity", "timeout"]
-    return any(k in err_str.lower() for k in transient_keywords)
+    """判断是否为 Google / OpenAI 服务器临时负载波动"""
+    transient_keywords = [
+        "503", "overload", "unavailable", "server is busy", "502", "504", 
+        "rate limit", "temporarily", "429", "resource_exhausted", "capacity", 
+        "timeout", "servererror", "server error", "500", "internal error"
+    ]
+    return any(k in str(err_str).lower() for k in transient_keywords)
 
 def is_model_not_found_error(err_str):
     not_found_keywords = ["not found", "404", "invalid argument", "unsupported model", "permission denied", "not supported for generatecontent", "does not exist"]
-    return any(k in err_str.lower() for k in not_found_keywords)
+    return any(k in str(err_str).lower() for k in not_found_keywords)
 
 def live_web_search(query, max_results=3):
     try:
@@ -157,10 +161,10 @@ def live_web_search(query, max_results=3):
         return ""
 
 # ==============================================================================
-# 4. 底层接口与辅助函数定义 (提前定义，彻底杜绝 NameError)
+# 4. 底层接口与辅助函数定义
 # ==============================================================================
-def call_single_attempt(provider_name, api_key_val, model_id, final_prompt, base_url_val="", temp_val=0.1):
-    """底层通用单次模型请求（兼容各家原生与 OpenAI-Compatible 网关）"""
+def call_single_attempt(provider_name, api_key_val, model_id, final_prompt, base_url_val="", temp_val=0.1, system_inst=SOP_SYSTEM_INSTRUCTION, enable_search=True):
+    """底层通用单次模型请求"""
     if provider_name == "Google Gemini":
         try:
             from google import genai
@@ -168,10 +172,13 @@ def call_single_attempt(provider_name, api_key_val, model_id, final_prompt, base
             client = genai.Client(api_key=api_key_val)
             
             config_args = {
-                "system_instruction": SOP_SYSTEM_INSTRUCTION,
-                "temperature": temp_val,
-                "tools": [types.Tool(google_search=types.GoogleSearch())]
+                "temperature": temp_val
             }
+            if system_inst:
+                config_args["system_instruction"] = system_inst
+            if enable_search:
+                config_args["tools"] = [types.Tool(google_search=types.GoogleSearch())]
+                
             try:
                 config = types.GenerateContentConfig(**config_args)
                 response = client.models.generate_content(
@@ -180,6 +187,7 @@ def call_single_attempt(provider_name, api_key_val, model_id, final_prompt, base
                     config=config
                 )
             except Exception:
+                # 容错降级：移除 tools 再次尝试
                 config_args.pop("tools", None)
                 config = types.GenerateContentConfig(**config_args)
                 response = client.models.generate_content(
@@ -214,7 +222,7 @@ def call_single_attempt(provider_name, api_key_val, model_id, final_prompt, base
         except ImportError:
             import google.generativeai as legacy_genai
             legacy_genai.configure(api_key=api_key_val)
-            model = legacy_genai.GenerativeModel(model_name=model_id, system_instruction=SOP_SYSTEM_INSTRUCTION)
+            model = legacy_genai.GenerativeModel(model_name=model_id, system_instruction=system_inst)
             res = model.generate_content(final_prompt, generation_config={"temperature": temp_val})
             return res.text
 
@@ -230,18 +238,17 @@ def call_single_attempt(provider_name, api_key_val, model_id, final_prompt, base
             client = openai.OpenAI(api_key=api_key_val, timeout=120.0)
 
         is_reasoner = any(k in model_id.lower() for k in ["o1", "o3", "reasoner"])
-        # 兼容性处理：只有 OpenAI 官方的 o1/o3 才支持 max_completion_tokens；DeepSeek 和其他网关统一使用 max_tokens
         is_openai_official_reasoner = ("o1" in model_id.lower() or "o3" in model_id.lower()) and (provider_name == "OpenAI (ChatGPT)")
 
         if is_reasoner:
             messages = [
-                {"role": "user", "content": f"【系统指导准则】\n{SOP_SYSTEM_INSTRUCTION}\n\n【当前分析任务】\n{final_prompt}"}
+                {"role": "user", "content": f"【系统指导准则】\n{system_inst}\n\n【当前分析任务】\n{final_prompt}"}
             ]
             token_key = "max_completion_tokens" if is_openai_official_reasoner else "max_tokens"
             call_args = {"model": model_id, "messages": messages, token_key: 8192}
         else:
             messages = [
-                {"role": "system", "content": SOP_SYSTEM_INSTRUCTION},
+                {"role": "system", "content": system_inst},
                 {"role": "user", "content": final_prompt}
             ]
             call_args = {"model": model_id, "messages": messages, "temperature": temp_val, "max_tokens": 8192}
@@ -254,7 +261,7 @@ def call_single_attempt(provider_name, api_key_val, model_id, final_prompt, base
         client = anthropic.Anthropic(api_key=api_key_val, timeout=120.0)
         res = client.messages.create(
             model=model_id,
-            system=SOP_SYSTEM_INSTRUCTION,
+            system=system_inst,
             max_tokens=8192,
             temperature=temp_val,
             messages=[{"role": "user", "content": final_prompt}]
@@ -264,36 +271,69 @@ def call_single_attempt(provider_name, api_key_val, model_id, final_prompt, base
         raise ValueError(f"未受支持的供应商: {provider_name}")
 
 def parse_url_to_launchpad(quick_input, provider_name, api_key_val, model_id, base_url_val=""):
-    """输入产品链接或品名/SKU，利用大模型+网络搜索自动提取结构化启动单参数"""
+    """输入产品链接或品名/SKU，带高可用容错与备选模型自动切换"""
     search_query = f"{quick_input} product specifications dimensions materials price home depot lowes"
     fetched_web = live_web_search(search_query, max_results=3)
     
     parsing_prompt = f"""
 你是一名北美大零售（The Home Depot / Lowe's）资深产品总监与工程选品专家。
-用户输入了一个目标产品链接或关键信息：【{quick_input}】。
+目标输入信息：【{quick_input}】。
 
 【参考联网检索信息】：
 {fetched_web}
 
-你的任务：通过搜索或推导该产品在北美主流商超（The Home Depot / Lowe's）的真实销售规格，帮助新人自动补齐并生成专业、标准的【项目启动单参数】。
-请务必返回合法的纯 JSON 字典格式，切勿添加代码块以外的多余文字：
+请严格按下列格式输出合法的纯 JSON 字典，切勿包含代码块标记外的任何多余文字：
 {{
-  "channel": "严格从以下列表中匹配最合适的一个：['The Home Depot (THD)', 'Lowe\\'s', 'Dual-Channel (THD + Lowe\\'s 跨渠道对标)']",
-  "product_name": "完整专业品名，必须中英双语（例如：4 in. x 10 in. Cast Aluminum Decorative Floor Register (4x10 美标重型铸铝装饰性地板出风口)）",
+  "channel": "严格从列表匹配一个：['The Home Depot (THD)', 'Lowe\\'s', 'Dual-Channel (THD + Lowe\\'s 跨渠道对标)']",
+  "product_name": "完整品名，中英双语",
   "product_url": "{quick_input}",
-  "nominal_size": "标称安装开孔/尺寸基准，注明英制与公制（例如：4x10 inches (102x254 mm) 风管标称开孔尺寸）",
-  "material_and_finish": "真实材质与表面工艺（例如：高强度重型铸铝 (Cast Aluminum) / 哑光黑静电粉末喷涂 (Matte Black Powder Coat)）",
-  "load_and_safety": "行业承重与安全规范（例如：点载荷承重 >= 300 lbs (IBC/IRC 标准)，单孔防卡高跟隙缝 < 9.5 mm (ADA 安全标准)）",
-  "mounting_type": "安装部位大类，严格从以下列表中匹配一个：['厨卫/橱柜/台面/管道 (Kitchen, Bath & Plumbing)', '地面安装 (Floor)', '墙面/天花板安装 (Wall & Ceiling)', '门窗/出入口五金 (Doors & Hardware)', '户外/甲板/庭院 (Outdoor & Deck)', '独立放置/免安装 (Freestanding/Portable)', '自定义安装载体']",
-  "target_persona": "目标客群，严格从以下列表中选一个最契合的：['全客群通用 (DIY房主 + PRO承包商双轮驱动)', '聚焦 DIY 个人房主 (极简安装与防呆)', '聚焦 PRO 专业施工承包商 (快速作业与耐操耐久)']",
-  "packaging_type": "零售包装形态，严格从以下列表中选一个：['热缩膜带展示卡 (Shrink Wrap w/ Header Card) - 经济畅销型', '双面高透吸塑泡壳 (Clamshell Blister Pack) - 防盗抗撕挂钩型', '独立开窗瓦楞彩盒 (Corrugated Box w/ Window) - 高端防摔防护型', '工程批发大包装 (Contractor Bulk Pack) - 工地大宗出货型']",
-  "included_accessories": "随附配件与紧固件（例如：含 2 枚高强度镀锌自攻螺丝与防滑胶垫；或标明：裸装免螺丝设计）",
-  "target_price": "市场在售价格区间与预估落地成本（例如：零售价: $14.99 - $19.99 | 目标落地成本: <= $4.20）",
-  "competitors": "Top 2 核心主流知名竞品（品牌与型号，例如：Decor Grates 4x10 Cast Aluminum; Accord Ventilation 4x10）",
-  "focus_points": "买家最痛的 3 大真实差评吐槽与新人避坑重点（例如：1. 买家常把表面外沿尺寸当开孔量错导致高退货\\n2. 踏板受重踩容易下陷变形\\n3. 表面涂层耐磨度不足易划伤露底）"
+  "nominal_size": "标称安装开孔/尺寸基准 (含英制与公制)",
+  "material_and_finish": "真实材质与表面工艺",
+  "load_and_safety": "行业承重与安全规范",
+  "mounting_type": "安装部位，严格从列表匹配一个：['厨卫/橱柜/台面/管道 (Kitchen, Bath & Plumbing)', '地面安装 (Floor)', '墙面/天花板安装 (Wall & Ceiling)', '门窗/出入口五金 (Doors & Hardware)', '户外/甲板/庭院 (Outdoor & Deck)', '独立放置/免安装 (Freestanding/Portable)']",
+  "target_persona": "目标客群，从列表匹配一个：['全客群通用 (DIY房主 + PRO承包商双轮驱动)', '聚焦 DIY 个人房主 (极简安装与防呆)', '聚焦 PRO 专业施工承包商 (快速作业与耐操耐久)']",
+  "packaging_type": "零售包装形态，从列表匹配一个：['热缩膜带展示卡 (Shrink Wrap w/ Header Card) - 经济畅销型', '双面高透吸塑泡壳 (Clamshell Blister Pack) - 防盗抗撕挂钩型', '独立开窗瓦楞彩盒 (Corrugated Box w/ Window) - 高端防摔防护型', '工程批发大包装 (Contractor Bulk Pack) - 工地大宗出货型']",
+  "included_accessories": "随附配件与紧固件",
+  "target_price": "市场零售价与落地成本",
+  "competitors": "Top 2 核心主流竞品",
+  "focus_points": "买家最痛的 3 大真实差评吐槽与新人避坑重点"
 }}
 """
-    raw_res = call_single_attempt(provider_name, api_key_val, model_id, parsing_prompt, base_url_val, temp_val=0.1)
+    # 建立候选模型池，防止主模型 503 导致失败
+    candidate_models = [model_id]
+    if provider_name in FALLBACK_MODELS:
+        for fb in FALLBACK_MODELS[provider_name]:
+            if fb != model_id and fb not in candidate_models:
+                candidate_models.append(fb)
+
+    raw_res = ""
+    for current_model in candidate_models[:3]:
+        for attempt in range(1, 3):
+            try:
+                # 预填使用轻量指令，且禁用二次 Google Tools，极大降低 500/503 几率
+                raw_res = call_single_attempt(
+                    provider_name=provider_name,
+                    api_key_val=api_key_val,
+                    model_id=current_model,
+                    final_prompt=parsing_prompt,
+                    base_url_val=base_url_val,
+                    temp_val=0.1,
+                    system_inst="You are a professional product spec extractor. Output valid JSON only.",
+                    enable_search=False
+                )
+                if raw_res:
+                    break
+            except Exception as e:
+                err_str = str(e)
+                if is_model_not_found_error(err_str):
+                    break
+                time.sleep(attempt * 1.5)
+        if raw_res:
+            break
+
+    if not raw_res:
+        return None
+
     match = re.search(r'\{.*\}', raw_res, re.DOTALL)
     if match:
         try:
@@ -341,32 +381,40 @@ def execute_stage(provider_name, api_key_val, model_id, stage_prompt, stage_name
         for attempt in range(1, 3):
             with st.spinner(f"⚡ 正在执行: {stage_name} (模型: `{current_model}`)..."):
                 try:
-                    result = call_single_attempt(provider_name, api_key_val, current_model, final_prompt, base_url_val, temp_val)
+                    result = call_single_attempt(
+                        provider_name=provider_name,
+                        api_key_val=api_key_val,
+                        model_id=current_model,
+                        final_prompt=final_prompt,
+                        base_url_val=base_url_val,
+                        temp_val=temp_val,
+                        system_inst=SOP_SYSTEM_INSTRUCTION,
+                        enable_search=True
+                    )
                     status_bar.empty()
                     if current_model != model_id:
-                        st.caption(f"💡 注：主模型遇波峰，此阶段已通过备选模型 `{current_model}` 成功生成。")
+                        st.caption(f"💡 注：主模型遇波峰，此阶段已通过备用模型 `{current_model}` 成功生成。")
                     return result
                 except Exception as e:
                     last_err = str(e)
                     if is_model_not_found_error(last_err):
-                        status_bar.info(f"🔄 模型 `{current_model}` 不可用，自动切至下一模型...")
+                        status_bar.info(f"🔄 模型 `{current_model}` 不可用，自动切至下一备选...")
                         break
                     elif is_transient_error(last_err):
                         wait_sec = attempt * 3
-                        status_bar.info(f"⏳ `{current_model}` 流量高峰，退避重试 ({attempt}/2，等待 {wait_sec}s)...")
+                        status_bar.info(f"⏳ `{current_model}` 流量高峰 (ServerError)，退避重试 ({attempt}/2，等待 {wait_sec}s)...")
                         time.sleep(wait_sec)
                     else:
                         status_bar.empty()
                         return f"❌ 阶段执行遇到异常: {last_err}"
         
-        status_bar.info(f"🔄 模型 `{current_model}` 负载偏高，切至备选模型...")
+        status_bar.info(f"🔄 模型 `{current_model}` 繁忙，自动切至备用模型...")
         time.sleep(1.0)
 
     status_bar.empty()
-    return f"❌ 阶段执行失败：模型服务繁忙，请在下方点击【🔄 重新运行】重试。\n错误原因: {last_err}"
+    return f"❌ 阶段执行失败：模型服务繁忙 (ServerError)，请在下方点击【🔄 重新运行】重试。\n错误原因: {last_err}"
 
 def save_project_to_disk(prod_name, ch_mode):
-    """保存当前分析结果到本地 JSON 库"""
     if not prod_name:
         return
     clean_name = re.sub(r'[^a-zA-Z0-9_\-\u4e00-\u9fa5]', '_', prod_name)[:40]
@@ -380,13 +428,13 @@ def save_project_to_disk(prod_name, ch_mode):
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(save_data, f, ensure_ascii=False, indent=2)
 
-# 初始化会话缓存
+# 初始化状态
 for i in range(1, 7):
     if f"stage{i}_res" not in st.session_state:
         st.session_state[f"stage{i}_res"] = ""
 
 # ==============================================================================
-# 5. 侧边栏：模型配置与启动单输入
+# 5. 侧边栏：多模型配置与启动单输入
 # ==============================================================================
 with st.sidebar:
     st.header("⚙️ 多模型引擎配置")
@@ -416,9 +464,9 @@ with st.sidebar:
     
     custom_base_url = ""
     if provider == "WorkBuddy (腾讯云 AI Agent)":
-        custom_base_url = st.text_input("WorkBuddy API Base URL*", value="https://api.workbuddy.cn/v1", help="支持腾讯云 WorkBuddy / CodeBuddy 官方 Token Plan 网关")
+        custom_base_url = st.text_input("WorkBuddy API Base URL*", value="https://api.workbuddy.cn/v1")
     elif provider == "OpenAI 兼容中转 / OpenRouter / 自定义 API":
-        custom_base_url = st.text_input("自定义 API Base URL*", value="https://openrouter.ai/api/v1", help="支持中转接口如 OpenRouter、OneAPI、SiliconFlow 等")
+        custom_base_url = st.text_input("自定义 API Base URL*", value="https://openrouter.ai/api/v1")
     elif provider == "DeepSeek (深度求索)":
         custom_base_url = "https://api.deepseek.com"
 
@@ -458,9 +506,8 @@ with st.sidebar:
         
     st.caption(f"当前生效模型: `{model_name}`")
     
-    temperature = st.slider("严谨度 (Temperature)", min_value=0.0, max_value=0.5, value=0.1, step=0.05, help="建议保持在 0.1 左右以确保数据真实准确")
+    temperature = st.slider("严谨度 (Temperature)", min_value=0.0, max_value=0.5, value=0.1, step=0.05)
 
-    # 历史记录载入功能
     existing_records = [f for f in os.listdir(HISTORY_DIR) if f.endswith(".json")]
     if existing_records:
         st.markdown("---")
@@ -479,7 +526,6 @@ with st.sidebar:
     st.markdown("---")
     st.header("📋 V3.0 丰富版项目启动单")
 
-    # 新人一键预填功能
     with st.container():
         st.markdown("##### 🪄 新人智能助手：链接一键预填")
         st.caption("粘贴产品官网链接、SKU 或英文品名，AI 将自动联网提炼并填好启动单参数。")
@@ -495,29 +541,31 @@ with st.sidebar:
             elif not quick_input.strip():
                 st.warning("请先粘贴产品链接或输入产品名称！")
             else:
-                with st.spinner("🔍 正在检索官方详情页并提炼工程规格..."):
-                    parsed_res = parse_url_to_launchpad(quick_input.strip(), provider, api_key, model_name, custom_base_url)
-                    if parsed_res:
-                        st.session_state["p_channel"] = parsed_res.get("channel", "The Home Depot (THD)")
-                        st.session_state["p_name"] = parsed_res.get("product_name", "")
-                        st.session_state["p_url"] = parsed_res.get("product_url", quick_input.strip())
-                        st.session_state["p_size"] = parsed_res.get("nominal_size", "")
-                        st.session_state["p_mat"] = parsed_res.get("material_and_finish", "")
-                        st.session_state["p_load"] = parsed_res.get("load_and_safety", "")
-                        st.session_state["p_mount"] = parsed_res.get("mounting_type", "地面安装 (Floor)")
-                        st.session_state["p_persona"] = parsed_res.get("target_persona", "全客群通用 (DIY房主 + PRO承包商双轮驱动)")
-                        st.session_state["p_pkg"] = parsed_res.get("packaging_type", "热缩膜带展示卡 (Shrink Wrap w/ Header Card) - 经济畅销型")
-                        st.session_state["p_acc"] = parsed_res.get("included_accessories", "")
-                        st.session_state["p_price"] = parsed_res.get("target_price", "")
-                        st.session_state["p_comp"] = parsed_res.get("competitors", "")
-                        st.session_state["p_focus"] = parsed_res.get("focus_points", "")
-                        st.success("🎉 已智能解析并填入启动单！可随时审阅和修改。")
-                        time.sleep(0.8)
-                        st.rerun()
-                    else:
-                        st.error("公开网络未匹配到该产品，请在下方手动输入。")
+                try:
+                    with st.spinner("🔍 正在检索官方详情页并提炼工程规格 (遇繁忙将自动切备选)..."):
+                        parsed_res = parse_url_to_launchpad(quick_input.strip(), provider, api_key, model_name, custom_base_url)
+                        if parsed_res:
+                            st.session_state["p_channel"] = parsed_res.get("channel", "The Home Depot (THD)")
+                            st.session_state["p_name"] = parsed_res.get("product_name", "")
+                            st.session_state["p_url"] = parsed_res.get("product_url", quick_input.strip())
+                            st.session_state["p_size"] = parsed_res.get("nominal_size", "")
+                            st.session_state["p_mat"] = parsed_res.get("material_and_finish", "")
+                            st.session_state["p_load"] = parsed_res.get("load_and_safety", "")
+                            st.session_state["p_mount"] = parsed_res.get("mounting_type", "地面安装 (Floor)")
+                            st.session_state["p_persona"] = parsed_res.get("target_persona", "全客群通用 (DIY房主 + PRO承包商双轮驱动)")
+                            st.session_state["p_pkg"] = parsed_res.get("packaging_type", "热缩膜带展示卡 (Shrink Wrap w/ Header Card) - 经济畅销型")
+                            st.session_state["p_acc"] = parsed_res.get("included_accessories", "")
+                            st.session_state["p_price"] = parsed_res.get("target_price", "")
+                            st.session_state["p_comp"] = parsed_res.get("competitors", "")
+                            st.session_state["p_focus"] = parsed_res.get("focus_points", "")
+                            st.success("🎉 已智能解析并填入启动单！可随时审阅和修改。")
+                            time.sleep(0.8)
+                            st.rerun()
+                        else:
+                            st.warning("⚠️ 官方接口当前负载偏高 (ServerError)，未完成自动提取。请您直接在下方输入框手动填写。")
+                except Exception as err:
+                    st.warning(f"⚠️ 智能解析遇到服务器临时波动，已为您保留输入框，请直接在下方手动输入。")
 
-    # 预设模板
     with st.expander("💡 快速填入示例产品模板 (可选)"):
         col_t1, col_t2 = st.columns(2)
         with col_t1:
@@ -717,7 +765,7 @@ def build_prompts():
     return [p1, p2, p3, p4, p5, p6_base]
 
 # ==============================================================================
-# 7. 执行控制栏与全流程流水线
+# 7. 执行控制栏与流水线
 # ==============================================================================
 col_btn, col_clear, col_info = st.columns(3)
 with col_btn:
@@ -766,7 +814,6 @@ if run_all_btn:
         
         for idx in range(6):
             stage_idx = idx + 1
-            # 核心升级：注入滚动上下文，彻底打通各阶段记忆链
             accumulated_memory = get_accumulated_context(stage_idx)
             current_stage_prompt = prompts[idx] + accumulated_memory
             
@@ -793,7 +840,7 @@ if run_all_btn:
             st.success(f"🎉 【{product_name}】分析报告已生成并自动保存至本地记录库！")
 
 # ==============================================================================
-# 8. 成果展示、独立单步重试与报告导出
+# 8. 成果展示与报告导出
 # ==============================================================================
 if any(st.session_state[f"stage{i}_res"] for i in range(1, 7)):
     tab_sum, tab1, tab2, tab3, tab4, tab5, tab_full = st.tabs([
@@ -875,7 +922,6 @@ if any(st.session_state[f"stage{i}_res"] for i in range(1, 7)):
                 use_container_width=True
             )
         with col_dl2:
-            # 自动生成可直接打印为 PDF 的美化 HTML 报告
             html_doc = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -895,7 +941,7 @@ if any(st.session_state[f"stage{i}_res"] for i in range(1, 7)):
 <div style="background-color: #EFF6FF; border: 1px solid #BFDBFE; padding: 16px; border-radius: 8px; margin-bottom: 24px;">
     <h3 style="margin-top:0;">📋 项目基本信息</h3>
     <p><b>产品名称:</b> {product_name} | <b>目标渠道:</b> {channel_mode} | <b>标称尺寸:</b> {nominal_size}</p>
-    <p><b>生成日期:</b> {time.strftime('%Y-%m-%d %H:%M:%S')} (提示：在浏览器按 Ctrl+P 可直接转存为高清 PDF 报告)</p>
+    <p><b>生成日期:</b> {time.strftime('%Y-%m-%d %H:%M:%S')} (在浏览器按 Ctrl+P 可直接存为高清 PDF)</p>
 </div>
 <pre style="white-space: pre-wrap; font-family: inherit;">
 {full_markdown}
